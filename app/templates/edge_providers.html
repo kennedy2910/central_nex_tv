@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Permissões do Edge</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+</head>
+<body>
+<div class="container" style="padding:20px;">
+  <a href="/">&larr; voltar</a>
+  <h2 class="mt-2">Permissões (Providers) do Edge</h2>
+  <div class="text-muted mb-3">
+    Edge: <b>{{ edge.name }}</b> (<code>{{ edge.edge_id }}</code>)<br>
+    API Key: <code>{{ edge.api_key }}</code>
+  </div>
+
+  <form method="post" action="/admin/edges/{{edge.edge_id}}/providers/save">
+    <div class="card">
+      <div class="card-header"><b>Selecione os Providers que este Edge pode acessar</b></div>
+      <div class="card-body">
+        {% for p in providers %}
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="provider_ids" value="{{p.provider_id}}" id="p_{{p.provider_id}}"
+              {% if p.provider_id in current %}checked{% endif %}>
+            <label class="form-check-label" for="p_{{p.provider_id}}">
+              <b>{{ p.name }}</b> <span class="text-muted">(<code>{{ p.provider_id }}</code>)</span>
+            </label>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-primary">Salvar permissões</button>
+      </div>
+    </div>
+  </form>
+</div>
+</body>
+</html>

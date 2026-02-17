@@ -1,0 +1,376 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{{ request.app.title }} - Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    body { padding: 20px; }
+    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+    .small-muted { color: #666; font-size: .9rem; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1 class="mb-1">Central-Nex</h1>
+  <div class="small-muted mb-4">Canais, Grades e Edges com filtros</div>
+
+  <div class="row g-4">
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-header"><b>Providers</b></div>
+        <div class="card-body">
+          <form class="row g-2" method="post" action="/admin/providers/create">
+            <div class="col-md-3"><input class="form-control" name="provider_id" placeholder="prov-001" required></div>
+            <div class="col-md-4"><input class="form-control" name="name" placeholder="Esportes" required></div>
+            <div class="col-md-5"><input class="form-control" name="description" placeholder="descricao (opcional)"></div>
+            <div class="col-12"><button class="btn btn-primary btn-sm">Criar Provider</button></div>
+          </form>
+
+          <hr>
+          <table class="table table-sm align-middle">
+            <thead><tr><th>ID</th><th>Nome</th><th></th></tr></thead>
+            <tbody>
+            {% for p in providers %}
+              <tr>
+                <td><code>{{ p.provider_id }}</code></td>
+                <td>{{ p.name }}</td>
+                <td class="text-end">
+                  <form method="post" action="/admin/providers/delete" onsubmit="return confirm('Excluir provider {{p.provider_id}}?');">
+                    <input type="hidden" name="provider_id" value="{{p.provider_id}}">
+                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header"><b>Canais</b></div>
+        <div class="card-body">
+          <form class="row g-2" method="post" action="/admin/channels/create">
+            <div class="col-md-4">
+              <label class="form-label mb-1">Nome</label>
+              <input class="form-control" name="name" placeholder="ESPN" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label mb-1">Categoria</label>
+              <input class="form-control" name="category" placeholder="Esporte" required>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label mb-1">Numero</label>
+              <input class="form-control" name="channel_number" placeholder="004" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label mb-1">Provider</label>
+              <select class="form-select" name="provider_id" required>
+                {% for p in providers %}
+                  <option value="{{p.provider_id}}">{{p.name}} ({{p.provider_id}})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label mb-1">Tipo</label>
+              <select class="form-select" name="kind">
+                <option value="auto">auto</option>
+                <option value="hls">hls</option>
+                <option value="youtube">youtube</option>
+                <option value="youtube_linear">youtube_linear</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label mb-1">Ordem</label>
+              <input class="form-control" name="sort_order" type="number" value="100">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label mb-1">Schedule Start (UTC)</label>
+              <input class="form-control" name="schedule_start" placeholder="2026-01-31T00:00:00Z">
+            </div>
+            <div class="col-md-12">
+              <label class="form-label mb-1">Source URL (canal simples)</label>
+              <input class="form-control" name="source_url" placeholder="https://...">
+            </div>
+            <div class="col-12 d-flex gap-2 align-items-center">
+              <input type="hidden" name="is_active" value="1">
+              <button class="btn btn-primary btn-sm">Criar Canal</button>
+              <span class="small-muted">Conteudo/URLs multiplas sao gerenciadas ao abrir o canal.</span>
+            </div>
+          </form>
+
+          <hr>
+          <form class="row g-2" method="get" action="/">
+            <input type="hidden" name="edge_country" value="{{ selected_edge_country }}">
+            <input type="hidden" name="edge_state" value="{{ selected_edge_state }}">
+            <input type="hidden" name="edge_city" value="{{ selected_edge_city }}">
+            <div class="col-md-5">
+              <label class="form-label mb-1">Filtrar por Categoria</label>
+              <select class="form-select" name="channel_category">
+                <option value="">todas</option>
+                {% for cat in channel_categories %}
+                  <option value="{{cat}}" {% if selected_channel_category == cat %}selected{% endif %}>{{cat}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label mb-1">Filtrar por Grade</label>
+              <select class="form-select" name="channel_grade_id">
+                <option value="">todas</option>
+                {% for g in channel_grades %}
+                  <option value="{{g.id}}" {% if selected_channel_grade_id == (g.id ~ '') %}selected{% endif %}>{{g.name}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2 d-flex align-items-end gap-2">
+              <button class="btn btn-outline-primary btn-sm w-100">Filtrar</button>
+            </div>
+          </form>
+
+          <hr>
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Canal</th><th>Provider</th><th>Categoria</th><th>Tipo</th><th>Itens</th><th></th></tr></thead>
+            <tbody>
+            {% for c in channels %}
+              <tr>
+                <td>
+                  <b>{{ c.channel_number }} - {{ c.name }}</b>
+                  <div class="small-muted">ID: <code>{{ c.id }}</code></div>
+                </td>
+                <td>{{ c.provider_name }}<div class="small-muted"><code>{{ c.provider_id }}</code></div></td>
+                <td><code>{{ c.category }}</code></td>
+                <td><code>{{ c.kind }}</code></td>
+                <td><code>{{ c.linear_items_count }}</code></td>
+                <td class="text-end d-flex gap-2 justify-content-end">
+                  <a class="btn btn-outline-primary btn-sm" href="/admin/channels/{{c.id}}">Abrir conteudo</a>
+                  <form method="post" action="/admin/channels/delete" onsubmit="return confirm('Excluir canal {{c.channel_number}} - {{c.name}}?');">
+                    <input type="hidden" name="id" value="{{c.id}}">
+                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header"><b>Grades de Distribuicao (lista de canais)</b></div>
+        <div class="card-body">
+          <form class="row g-2" method="post" action="/admin/channel-grades/create">
+            <div class="col-md-5">
+              <label class="form-label mb-1">Nome da Grade</label>
+              <input class="form-control" name="name" placeholder="grade_esportes" required>
+            </div>
+            <div class="col-md-7">
+              <label class="form-label mb-1">Descricao</label>
+              <input class="form-control" name="description" placeholder="Opcional">
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary btn-sm">Criar Grade</button>
+            </div>
+          </form>
+
+          <hr>
+          <form class="row g-2" method="post" action="/admin/channel-grades/channels/add">
+            <div class="col-md-5">
+              <label class="form-label mb-1">Grade</label>
+              <select class="form-select" name="grade_id" required>
+                {% for g in channel_grades %}
+                  <option value="{{g.id}}">{{ g.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label mb-1">Canal</label>
+              <select class="form-select" name="channel_id" required>
+                {% for c in channels_all %}
+                  <option value="{{c.id}}">{{ c.channel_number }} - {{ c.name }} ({{ c.provider_id }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label mb-1">Ordem</label>
+              <input class="form-control" type="number" name="sort_order" value="100">
+            </div>
+            <div class="col-12">
+              <button class="btn btn-outline-primary btn-sm">Adicionar Canal</button>
+            </div>
+          </form>
+
+          <form class="row g-2 mt-1" method="post" action="/admin/channel-grades/delete">
+            <div class="col-md-10">
+              <label class="form-label mb-1">Excluir Grade</label>
+              <select class="form-select" name="grade_id" required>
+                {% for g in channel_grades %}
+                  <option value="{{g.id}}">{{ g.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+              <button class="btn btn-outline-danger btn-sm w-100" onclick="return confirm('Excluir grade selecionada?');">Excluir</button>
+            </div>
+          </form>
+
+          <hr>
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Grade</th><th>Canal</th><th>Ordem</th><th></th></tr></thead>
+            <tbody>
+            {% for gc in grade_channels %}
+              <tr>
+                <td><code>{{ gc.grade_name }}</code><div class="small-muted">#{{ gc.grade_id }}</div></td>
+                <td>{{ gc.channel_number }} - {{ gc.channel_name }}<div class="small-muted"><code>{{ gc.provider_id }}</code> - {{ gc.provider_name }}</div></td>
+                <td><code>{{ gc.sort_order }}</code></td>
+                <td class="text-end">
+                  <form method="post" action="/admin/channel-grades/channels/remove" onsubmit="return confirm('Remover canal da grade {{gc.grade_name}}?');">
+                    <input type="hidden" name="grade_id" value="{{gc.grade_id}}">
+                    <input type="hidden" name="channel_id" value="{{gc.channel_id}}">
+                    <button class="btn btn-outline-secondary btn-sm">Remover</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="card">
+        <div class="card-header"><b>Edges</b></div>
+        <div class="card-body">
+          <form class="row g-2" method="post" action="/admin/edges/create">
+            <div class="col-md-4"><input class="form-control" name="edge_id" placeholder="edge-001" required></div>
+            <div class="col-md-4"><input class="form-control" name="name" placeholder="Edge Sao Paulo" required></div>
+            <div class="col-md-4"><input class="form-control" name="hls_base_url" placeholder="http://EDGE_IP:8080/hls" required></div>
+            <div class="col-md-4"><input class="form-control" name="country" placeholder="Pais"></div>
+            <div class="col-md-4"><input class="form-control" name="state" placeholder="Estado"></div>
+            <div class="col-md-4"><input class="form-control" name="city" placeholder="Cidade"></div>
+            <div class="col-12"><button class="btn btn-primary btn-sm">Criar Edge</button></div>
+          </form>
+
+          <hr>
+          <form class="row g-2" method="get" action="/">
+            <input type="hidden" name="channel_category" value="{{ selected_channel_category }}">
+            <input type="hidden" name="channel_grade_id" value="{{ selected_channel_grade_id }}">
+            <div class="col-md-4">
+              <label class="form-label mb-1">Pais</label>
+              <select class="form-select" name="edge_country">
+                <option value="">todos</option>
+                {% for v in edge_countries %}
+                  <option value="{{v}}" {% if selected_edge_country == v %}selected{% endif %}>{{v}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label mb-1">Estado</label>
+              <select class="form-select" name="edge_state">
+                <option value="">todos</option>
+                {% for v in edge_states %}
+                  <option value="{{v}}" {% if selected_edge_state == v %}selected{% endif %}>{{v}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label mb-1">Cidade</label>
+              <select class="form-select" name="edge_city">
+                <option value="">todas</option>
+                {% for v in edge_cities %}
+                  <option value="{{v}}" {% if selected_edge_city == v %}selected{% endif %}>{{v}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 d-flex gap-2">
+              <button class="btn btn-outline-primary btn-sm">Filtrar Edges</button>
+              <a class="btn btn-outline-secondary btn-sm" href="/">Limpar</a>
+            </div>
+          </form>
+
+          <hr>
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Edge</th><th>Local</th><th>Grade</th><th></th></tr></thead>
+            <tbody>
+            {% for e in edges %}
+              <tr>
+                <td>
+                  <b>{{ e.name }}</b>
+                  <div class="small-muted"><code>{{ e.edge_id }}</code></div>
+                  <div class="small-muted"><code>{{ e.api_key }}</code></div>
+                </td>
+                <td>
+                  <div>{{ e.country or '-' }} / {{ e.state or '-' }} / {{ e.city or '-' }}</div>
+                  <div class="small-muted"><code>{{ e.hls_base_url }}</code></div>
+                </td>
+                <td><code>{{ e.grade_name or "grade_geral_auto" }}</code></td>
+                <td class="text-end">
+                  <form class="mb-2" method="post" action="/admin/edges/rotate_key" onsubmit="return confirm('Girar API key do edge {{e.edge_id}}?');">
+                    <input type="hidden" name="edge_id" value="{{e.edge_id}}">
+                    <button class="btn btn-outline-secondary btn-sm">Girar Key</button>
+                  </form>
+                  <form method="post" action="/admin/edges/delete" onsubmit="return confirm('Excluir edge {{e.edge_id}}?');">
+                    <input type="hidden" name="edge_id" value="{{e.edge_id}}">
+                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+
+          <form class="row g-2" method="post" action="/admin/edges/update-location">
+            <div class="col-md-4">
+              <label class="form-label mb-1">Edge</label>
+              <select class="form-select" name="edge_id" required>
+                {% for e in edges %}
+                  <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-3"><label class="form-label mb-1">Pais</label><input class="form-control" name="country"></div>
+            <div class="col-md-3"><label class="form-label mb-1">Estado</label><input class="form-control" name="state"></div>
+            <div class="col-md-2"><label class="form-label mb-1">Cidade</label><input class="form-control" name="city"></div>
+            <div class="col-12"><button class="btn btn-outline-primary btn-sm">Atualizar localizacao</button></div>
+          </form>
+
+          <hr>
+          <form class="row g-2" method="post" action="/admin/edges/assign-grade">
+            <div class="col-md-4">
+              <label class="form-label mb-1">Edge</label>
+              <select class="form-select" name="edge_id" required>
+                {% for e in edges %}
+                  <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label mb-1">Grade</label>
+              <select class="form-select" name="grade_id">
+                <option value="">grade_geral_auto (todos canais ativos)</option>
+                {% for g in channel_grades %}
+                  <option value="{{g.id}}">{{ g.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+              <button class="btn btn-primary btn-sm w-100">Vincular</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header"><b>Teste rapido</b></div>
+        <div class="card-body">
+<pre class="mb-0"><code>curl -H "X-API-KEY: edge_xxx" http://CENTRAL_IP:9000/api/edge/channels
+curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

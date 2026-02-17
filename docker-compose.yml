@@ -1,0 +1,12 @@
+services:
+  central:
+    build: .
+    container_name: central-nex
+    restart: unless-stopped
+    environment:
+      - DATA_DIR=/data
+      - CENTRAL_TITLE=Central-Nex
+    volumes:
+      - ./data:/data
+    ports:
+      - "9000:9000"
