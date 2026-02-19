@@ -1049,10 +1049,9 @@ def create_channel_item(
     return_channel_id: Optional[int] = Form(None),
     position: int = Form(...),
     item_type: str = Form(..., alias="type"),
-    url: str = Form(None),
-    duration: str = Form(""),
+    url: str = Form(None)
 ):
-    # Keep automatic behavior as default, but accept explicit duration from ingest.
+    # NOTE: duração NÃO vem mais do form. É 100% automática aqui.
     try:
         position_i = int(position)
     except Exception:
@@ -1069,32 +1068,13 @@ def create_channel_item(
     if item_type_clean == "video" and not url_clean:
         raise HTTPException(status_code=400, detail="video items require url")
 
-    dur_raw = (duration or "").strip()
-
-    def _parse_duration(raw: str) -> Optional[int]:
-        if not raw:
-            return None
-        try:
-            value = int(raw)
-        except Exception:
-            raise HTTPException(status_code=400, detail="duration must be a valid integer")
-        if value <= 0:
-            raise HTTPException(status_code=400, detail="duration must be > 0")
-        return value
-
-    manual_duration = _parse_duration(dur_raw)
-
-    # Duration strategy:
-    # 1) Manual duration wins when informed (ingest/bulk operations).
-    # 2) Otherwise preserve existing auto-lookup + fallback behavior.
+    # AUTO duration logic (robust)
     if item_type_clean == "ad":
-        duration_i = manual_duration if manual_duration is not None else 30
+        duration_i = 30
         url_db = None
     else:
         url_db = url_clean
-        if manual_duration is not None:
-            duration_i = manual_duration
-        elif is_youtube_url(url_clean):
+        if is_youtube_url(url_clean):
             try:
                 d = youtube_duration_seconds(url_clean)
                 duration_i = d if d and d > 0 else 600
