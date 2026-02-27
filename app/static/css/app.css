@@ -709,6 +709,14 @@ a {
   font-size: 14px;
 }
 
+.ads-message-cell,
+.ads-url-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fab-wrap {
   position: fixed;
   right: 24px;

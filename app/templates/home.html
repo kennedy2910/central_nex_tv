@@ -324,6 +324,44 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
             </form>
           </details>
 
+          <details class="ops-card" id="ads-manager" open>
+            <summary>ADS Banner</summary>
+            <form class="ops-form-grid" method="post" action="/admin/channel-banner-ads/create">
+              <label>Canal
+                <select name="channel_id" required>
+                  {% for c in channels_all %}
+                    <option value="{{c.id}}">{{ c.channel_number }} - {{ c.name }} ({{ c.provider_id }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Duracao (s)<input name="duration" type="number" min="1" value="5" required></label>
+              <label class="span-2">Mensagem<input name="message" placeholder="ADS TESTE NO CANAL Spacetoday" required></label>
+              <label class="span-2">URL Banner<input name="target_url" placeholder="https://..." required></label>
+              <button class="nex-btn nex-btn-teal" type="submit">Cadastrar Banner</button>
+            </form>
+            <table class="nex-table compact-table ads-table">
+              <thead><tr><th>Canal</th><th>Mensagem</th><th>Duracao</th><th>URL</th><th></th></tr></thead>
+              <tbody>
+              {% for ad in banner_ads %}
+                <tr>
+                  <td>{{ ad.channel_number }} - {{ ad.channel_name }}<div class="channel-meta">{{ ad.provider_id }} - {{ ad.provider_name }}</div></td>
+                  <td class="ads-message-cell">{{ ad.message }}</td>
+                  <td class="mono">{{ ad.duration }}s</td>
+                  <td class="ads-url-cell mono">{{ ad.target_url }}</td>
+                  <td>
+                    <form method="post" action="/admin/channel-banner-ads/delete" onsubmit="return confirm('Excluir banner do canal {{ad.channel_number}} - {{ad.channel_name}}?');">
+                      <input type="hidden" name="id" value="{{ad.id}}">
+                      <button class="nex-btn nex-btn-inline is-danger" type="submit">Excluir</button>
+                    </form>
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5" class="nex-empty">Nenhum banner ADS cadastrado.</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </details>
+
           <details class="ops-card" id="provider-manager">
             <summary>Providers</summary>
             <form class="ops-form-grid" method="post" action="/admin/providers/create">

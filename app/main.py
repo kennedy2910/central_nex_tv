@@ -910,6 +910,26 @@ def init_db() -> None:
     """)
 
     # -------------------------
+    # Banner ads por canal
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS channel_banner_ads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        duration INTEGER NOT NULL DEFAULT 5,
+        target_url TEXT NOT NULL DEFAULT '',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+    )
+    """)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_channel_banner_ads_channel
+    ON channel_banner_ads(channel_id, is_active, created_at)
+    """)
+
+    # -------------------------
     # Edge linear programming (advanced)
     # -------------------------
     cur.execute("""
@@ -1105,13 +1125,62 @@ def resolve_edge_programming(edge_id: str, channel_id: int) -> Dict[str, Any]:
     return {"playlist_id": None, "playlist_name": None, "schedule_start": None}
 
 
-def enrich_channel_for_edge(channel_row: sqlite3.Row | Dict[str, Any], edge: sqlite3.Row) -> Dict[str, Any]:
+def fetch_channel_banner_ads_map(channel_ids: List[int], active_only: bool = True) -> Dict[int, List[Dict[str, Any]]]:
+    seen: set[int] = set()
+    normalized_ids: List[int] = []
+    for raw_id in channel_ids:
+        try:
+            channel_id = int(raw_id)
+        except Exception:
+            continue
+        if channel_id in seen:
+            continue
+        seen.add(channel_id)
+        normalized_ids.append(channel_id)
+
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    sql = f"""
+        SELECT id, channel_id, message, duration, target_url, is_active, created_at
+        FROM channel_banner_ads
+        WHERE channel_id IN ({placeholders})
+    """
+    if active_only:
+        sql += " AND is_active=1"
+    sql += " ORDER BY channel_id, created_at DESC, id DESC"
+
+    rows = fetch_all(sql, tuple(normalized_ids))
+    result: Dict[int, List[Dict[str, Any]]] = {channel_id: [] for channel_id in normalized_ids}
+    for row in rows:
+        result.setdefault(row["channel_id"], []).append({
+            "id": row["id"],
+            "message": row["message"],
+            "duration": row["duration"],
+            "url": row["target_url"],
+            "target_url": row["target_url"],
+            "created_at": row["created_at"],
+        })
+    return result
+
+
+def enrich_channel_for_edge(
+    channel_row: sqlite3.Row | Dict[str, Any],
+    edge: sqlite3.Row,
+    banner_ads_by_channel: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
     item = dict(channel_row)
     item["channel_id"] = item.get("channel_number")
     item["channel_pk"] = item.get("id")
+    channel_pk = int(item["id"])
     src = item.get("source_url") or ""
     kind = normalize_channel_kind(item.get("kind"), src)
     item["kind"] = kind
+    if banner_ads_by_channel is None:
+        item["banner_ads"] = fetch_channel_banner_ads_map([channel_pk]).get(channel_pk, [])
+    else:
+        item["banner_ads"] = banner_ads_by_channel.get(channel_pk, [])
 
     hls_base = edge["hls_base_url"].rstrip("/")
     programming = resolve_edge_programming(edge["edge_id"], int(item["id"]))
@@ -1414,6 +1483,14 @@ def home(request: Request):
            .format(where_clause="WHERE gc.grade_id = ?" if channel_grade_id else ""),
         (channel_grade_id,) if channel_grade_id else (),
     )
+    banner_ads = fetch_all(
+        """SELECT ba.id, ba.channel_id, ba.message, ba.duration, ba.target_url, ba.is_active, ba.created_at,
+                  c.channel_number, c.name AS channel_name, c.provider_id, p.name AS provider_name
+           FROM channel_banner_ads ba
+           JOIN channels c ON c.id = ba.channel_id
+           JOIN providers p ON p.provider_id = c.provider_id
+           ORDER BY ba.created_at DESC, ba.id DESC"""
+    )
 
     return templates.TemplateResponse("home.html", {
         "request": request,
@@ -1424,6 +1501,7 @@ def home(request: Request):
         "channel_categories": channel_categories,
         "channel_grades": channel_grades,
         "grade_channels": grade_channels,
+        "banner_ads": banner_ads,
         "selected_channel_category": channel_category,
         "selected_channel_grade_id": str(channel_grade_id) if channel_grade_id else "",
         "selected_channel_provider_id": channel_provider_id,
@@ -1499,6 +1577,42 @@ def remove_channel_from_grade(grade_id: int = Form(...), channel_id: int = Form(
         (grade_id, channel_id),
     )
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/admin/channel-banner-ads/create")
+def create_channel_banner_ad(
+    channel_id: int = Form(...),
+    message: str = Form(...),
+    duration: int = Form(...),
+    target_url: str = Form(...),
+):
+    channel = fetch_one("SELECT id FROM channels WHERE id=?", (channel_id,))
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found")
+
+    message_clean = (message or "").strip()
+    target_url_clean = (target_url or "").strip()
+    if not message_clean:
+        raise HTTPException(status_code=400, detail="message is required")
+    if duration <= 0:
+        raise HTTPException(status_code=400, detail="duration must be > 0")
+    if not target_url_clean:
+        raise HTTPException(status_code=400, detail="target_url is required")
+
+    execute(
+        """
+        INSERT INTO channel_banner_ads(channel_id, message, duration, target_url, is_active)
+        VALUES (?,?,?,?,1)
+        """,
+        (channel_id, message_clean, int(duration), target_url_clean),
+    )
+    return RedirectResponse("/#ads-manager", status_code=303)
+
+
+@app.post("/admin/channel-banner-ads/delete")
+def delete_channel_banner_ad(id: int = Form(...)):
+    execute("DELETE FROM channel_banner_ads WHERE id=?", (id,))
+    return RedirectResponse("/#ads-manager", status_code=303)
 
 
 @app.post("/admin/channels/create")
@@ -2026,9 +2140,12 @@ def api_edge_channels(request: Request):
 
     result = []
     public_base = str(request.base_url).rstrip("/")
+    banner_ads_by_channel = fetch_channel_banner_ads_map(
+        [int(row["id"]) for rows in channels_by_provider.values() for row in rows]
+    )
     for pid in provider_order:
         rows = channels_by_provider.get(pid, [])
-        enriched = [enrich_channel_for_edge(r, edge) for r in rows]
+        enriched = [enrich_channel_for_edge(row, edge, banner_ads_by_channel) for row in rows]
         for channel in enriched:
             channel["icon_url"] = resolve_channel_icon_public_url(channel.get("icon_url"), public_base)
         result.append({
