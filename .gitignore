@@ -7,3 +7,5 @@ node_modules/
 .vscode/
 .DS_Store
 Thumbs.db
+app/static/channel-icons/*
+!app/static/channel-icons/default-channel.svg

@@ -4,13 +4,28 @@ import os
 import re
 import sqlite3
 import secrets
+import socket
+import io
+import struct
+import ipaddress
+import subprocess
+import threading
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi import FastAPI, Request, Form, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+from urllib.parse import urlparse, quote, unquote
 from urllib.request import Request as UrlRequest, urlopen
+
+try:
+    from PIL import Image  # type: ignore
+except Exception:  # pragma: no cover
+    Image = None
 
 
 def fetch_html(url: str) -> str:
@@ -145,6 +160,401 @@ app = FastAPI(title=os.getenv("CENTRAL_TITLE", "Central-Nex"))
 BASE_DIR = os.path.dirname(__file__)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+ADMIN_USERNAME = os.getenv("CENTRAL_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("CENTRAL_ADMIN_PASSWORD", "admin123")
+ADMIN_SESSION_SECRET = os.getenv(
+    "CENTRAL_SESSION_SECRET",
+    "central-nex-change-this-secret",
+)
+ADMIN_SESSION_MAX_AGE = max(300, int(os.getenv("CENTRAL_SESSION_MAX_AGE", "28800")))
+ADMIN_SESSION_HTTPS_ONLY = os.getenv("CENTRAL_SESSION_HTTPS_ONLY", "0") == "1"
+
+ADMIN_PUBLIC_PATHS = {
+    "/health",
+    "/login",
+    "/logout",
+    "/favicon.ico",
+}
+ADMIN_PUBLIC_PREFIXES = (
+    "/static/",
+    "/api/edge/",
+    "/iptv/",
+)
+
+CHANNEL_ICON_SUBDIR = "channel-icons"
+CHANNEL_ICON_URL_PREFIX = f"/static/{CHANNEL_ICON_SUBDIR}"
+CHANNEL_ICON_DIR = os.path.join(BASE_DIR, "static", CHANNEL_ICON_SUBDIR)
+DEFAULT_CHANNEL_ICON_FILENAME = "default-channel.svg"
+DEFAULT_CHANNEL_ICON_URL = f"{CHANNEL_ICON_URL_PREFIX}/{DEFAULT_CHANNEL_ICON_FILENAME}"
+os.makedirs(CHANNEL_ICON_DIR, exist_ok=True)
+
+EDGE_HEALTH_POLL_SECONDS = max(5, int(os.getenv("EDGE_HEALTH_POLL_SECONDS", "30")))
+EDGE_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("EDGE_PING_TIMEOUT_SECONDS", "2")))
+_edge_health_lock = threading.Lock()
+_edge_health_stop_event = threading.Event()
+_edge_health_thread: Optional[threading.Thread] = None
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def edge_host_from_hls_base_url(raw_url: str | None) -> str | None:
+    if not raw_url:
+        return None
+    val = raw_url.strip()
+    if not val:
+        return None
+    if "://" not in val:
+        val = "http://" + val
+    parsed = urlparse(val)
+    host = (parsed.hostname or "").strip().strip("[]")
+    return host or None
+
+
+def build_default_hls_base_url(edge_input: str | None) -> str:
+    host = edge_host_from_hls_base_url(edge_input)
+    if not host:
+        raise HTTPException(status_code=400, detail="edge_ip is required")
+
+    host_for_url = host
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.version == 6:
+            host_for_url = f"[{host}]"
+    except ValueError:
+        # Allow hostnames too, but always normalize to default URL format.
+        pass
+
+    return f"http://{host_for_url}:8080/hls"
+
+
+def parse_jpeg_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 4 or raw[0] != 0xFF or raw[1] != 0xD8:
+        return None
+
+    i = 2
+    sof_markers = {
+        0xC0, 0xC1, 0xC2, 0xC3,
+        0xC5, 0xC6, 0xC7,
+        0xC9, 0xCA, 0xCB,
+        0xCD, 0xCE, 0xCF,
+    }
+    while i + 3 < len(raw):
+        if raw[i] != 0xFF:
+            i += 1
+            continue
+        while i < len(raw) and raw[i] == 0xFF:
+            i += 1
+        if i >= len(raw):
+            break
+
+        marker = raw[i]
+        i += 1
+        if marker in (0xD8, 0xD9):  # SOI/EOI
+            continue
+        if marker == 0xDA:  # SOS
+            break
+        if i + 1 >= len(raw):
+            break
+        seg_len = struct.unpack(">H", raw[i:i+2])[0]
+        if seg_len < 2 or i + seg_len > len(raw):
+            break
+        if marker in sof_markers:
+            if seg_len < 7:
+                break
+            # P(1), Y(2), X(2), Nf(1)
+            height = struct.unpack(">H", raw[i+3:i+5])[0]
+            width = struct.unpack(">H", raw[i+5:i+7])[0]
+            return width, height
+        i += seg_len
+
+    return None
+
+
+def parse_webp_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 30:
+        return None
+    if raw[0:4] != b"RIFF" or raw[8:12] != b"WEBP":
+        return None
+
+    chunk = raw[12:16]
+    if chunk == b"VP8X" and len(raw) >= 30:
+        width = int.from_bytes(raw[24:27], "little") + 1
+        height = int.from_bytes(raw[27:30], "little") + 1
+        return width, height
+    return None
+
+
+def detect_image_info(raw: bytes) -> tuple[str, int, int] | None:
+    # Preferred path when Pillow is available.
+    if Image is not None:
+        try:
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+            fmt = (image.format or "PNG").lower()
+            width, height = image.size
+            return fmt, int(width), int(height)
+        except Exception:
+            pass
+
+    # Fallback path without Pillow (supports PNG/JPEG and basic WebP VP8X).
+    if len(raw) >= 24 and raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        width = struct.unpack(">I", raw[16:20])[0]
+        height = struct.unpack(">I", raw[20:24])[0]
+        return "png", width, height
+
+    jpeg = parse_jpeg_size(raw)
+    if jpeg:
+        return "jpeg", jpeg[0], jpeg[1]
+
+    webp = parse_webp_size(raw)
+    if webp:
+        return "webp", webp[0], webp[1]
+
+    return None
+
+
+def save_channel_icon_upload(icon_file: UploadFile) -> str:
+    if not icon_file:
+        raise HTTPException(status_code=400, detail="icon file is missing")
+
+    raw = icon_file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="icon file is empty")
+
+    if len(raw) > 6 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="icon file too large (max 6MB)")
+
+    info = detect_image_info(raw)
+    if not info:
+        raise HTTPException(status_code=400, detail="invalid image file")
+    fmt, width, height = info
+
+    if (width, height) != (300, 300):
+        raise HTTPException(status_code=400, detail="icon must be exactly 300x300")
+
+    ext_map = {
+        "png": ".png",
+        "jpeg": ".jpg",
+        "jpg": ".jpg",
+        "webp": ".webp",
+    }
+    ext = ext_map.get(fmt.lower(), ".img")
+    filename = f"{secrets.token_hex(16)}{ext}"
+    icon_path = os.path.join(CHANNEL_ICON_DIR, filename)
+    try:
+        if Image is not None:
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+            # Normalize to PNG for consistent delivery when Pillow exists.
+            icon_path = os.path.join(CHANNEL_ICON_DIR, f"{secrets.token_hex(16)}.png")
+            image.convert("RGBA").save(icon_path, format="PNG", optimize=True)
+            filename = os.path.basename(icon_path)
+        else:
+            with open(icon_path, "wb") as f:
+                f.write(raw)
+    except Exception:
+        raise HTTPException(status_code=500, detail="failed to save icon file")
+
+    return f"{CHANNEL_ICON_URL_PREFIX}/{filename}"
+
+
+def delete_channel_icon_file(icon_url: str | None) -> None:
+    if not icon_url:
+        return
+    icon = icon_url.strip()
+    if not icon.startswith(f"{CHANNEL_ICON_URL_PREFIX}/"):
+        return
+
+    filename = icon.rsplit("/", 1)[-1]
+    if not filename:
+        return
+    safe_name = os.path.basename(filename)
+    if safe_name == DEFAULT_CHANNEL_ICON_FILENAME:
+        return
+    icon_path = os.path.join(CHANNEL_ICON_DIR, safe_name)
+    if os.path.exists(icon_path):
+        try:
+            os.remove(icon_path)
+        except Exception:
+            pass
+
+
+def icon_file_exists_for_url(icon_url: str) -> bool:
+    icon = (icon_url or "").strip()
+    if not icon.startswith(f"{CHANNEL_ICON_URL_PREFIX}/"):
+        return False
+    filename = os.path.basename(icon)
+    if not filename:
+        return False
+    return os.path.exists(os.path.join(CHANNEL_ICON_DIR, filename))
+
+
+def resolve_channel_icon_public_url(icon_url: str | None, public_base: str) -> str:
+    raw = (icon_url or "").strip()
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+
+    if raw.startswith("/"):
+        if raw.startswith(f"{CHANNEL_ICON_URL_PREFIX}/") and not icon_file_exists_for_url(raw):
+            return f"{public_base}{DEFAULT_CHANNEL_ICON_URL}"
+        return f"{public_base}{raw}"
+
+    if raw.startswith("static/"):
+        normalized = "/" + raw
+        if normalized.startswith(f"{CHANNEL_ICON_URL_PREFIX}/") and not icon_file_exists_for_url(normalized):
+            return f"{public_base}{DEFAULT_CHANNEL_ICON_URL}"
+        return f"{public_base}{normalized}"
+
+    if raw:
+        return f"{public_base}/{raw.lstrip('/')}"
+    return f"{public_base}{DEFAULT_CHANNEL_ICON_URL}"
+
+
+def resolve_ping_ip(host: str) -> str | None:
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+
+    try:
+        # Prefer IPv4 because ping flags differ less across environments.
+        return socket.gethostbyname(host)
+    except Exception:
+        return None
+
+
+def parse_ping_latency_ms(output: str) -> Optional[int]:
+    match = re.search(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", output, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(round(float(match.group(1))))
+    except Exception:
+        return None
+
+
+def ping_ip(ip_addr: str, timeout_seconds: int = EDGE_PING_TIMEOUT_SECONDS) -> tuple[bool, Optional[int], str]:
+    if os.name == "nt":
+        cmd = ["ping", "-n", "1", "-w", str(timeout_seconds * 1000), ip_addr]
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(timeout_seconds), ip_addr]
+
+    started = monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds + 1,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, None, "timeout"
+    except Exception as exc:
+        return False, None, f"ping-error: {exc}"
+
+    stdout = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if proc.returncode == 0:
+        latency_ms = parse_ping_latency_ms(stdout)
+        if latency_ms is None:
+            latency_ms = int(round((monotonic() - started) * 1000))
+        return True, latency_ms, ""
+    return False, None, "no-reply"
+
+
+def refresh_edge_health_once() -> None:
+    if not _edge_health_lock.acquire(blocking=False):
+        return
+
+    try:
+        conn = db()
+        now_iso = utc_now_iso()
+        try:
+            edges = conn.execute(
+                "SELECT edge_id, hls_base_url, is_active FROM edges ORDER BY edge_id"
+            ).fetchall()
+
+            for edge in edges:
+                edge_id = edge["edge_id"]
+                if int(edge["is_active"] or 0) != 1:
+                    conn.execute(
+                        """
+                        INSERT INTO edge_health(edge_id, is_online, latency_ms, checked_at, fail_reason)
+                        VALUES (?, 0, NULL, ?, ?)
+                        ON CONFLICT(edge_id) DO UPDATE SET
+                            is_online=excluded.is_online,
+                            latency_ms=excluded.latency_ms,
+                            checked_at=excluded.checked_at,
+                            fail_reason=excluded.fail_reason
+                        """,
+                        (edge_id, now_iso, "edge-disabled"),
+                    )
+                    continue
+
+                host = edge_host_from_hls_base_url(edge["hls_base_url"])
+                if not host:
+                    conn.execute(
+                        """
+                        INSERT INTO edge_health(edge_id, is_online, latency_ms, checked_at, fail_reason)
+                        VALUES (?, 0, NULL, ?, ?)
+                        ON CONFLICT(edge_id) DO UPDATE SET
+                            is_online=excluded.is_online,
+                            latency_ms=excluded.latency_ms,
+                            checked_at=excluded.checked_at,
+                            fail_reason=excluded.fail_reason
+                        """,
+                        (edge_id, now_iso, "missing-host"),
+                    )
+                    continue
+
+                ip_addr = resolve_ping_ip(host)
+                if not ip_addr:
+                    conn.execute(
+                        """
+                        INSERT INTO edge_health(edge_id, is_online, latency_ms, checked_at, fail_reason)
+                        VALUES (?, 0, NULL, ?, ?)
+                        ON CONFLICT(edge_id) DO UPDATE SET
+                            is_online=excluded.is_online,
+                            latency_ms=excluded.latency_ms,
+                            checked_at=excluded.checked_at,
+                            fail_reason=excluded.fail_reason
+                        """,
+                        (edge_id, now_iso, f"dns-failed:{host}"),
+                    )
+                    continue
+
+                is_online, latency_ms, fail_reason = ping_ip(ip_addr, EDGE_PING_TIMEOUT_SECONDS)
+                conn.execute(
+                    """
+                    INSERT INTO edge_health(edge_id, is_online, latency_ms, checked_at, fail_reason)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(edge_id) DO UPDATE SET
+                        is_online=excluded.is_online,
+                        latency_ms=excluded.latency_ms,
+                        checked_at=excluded.checked_at,
+                        fail_reason=excluded.fail_reason
+                    """,
+                    (edge_id, 1 if is_online else 0, latency_ms, now_iso, fail_reason),
+                )
+
+            conn.execute(
+                "DELETE FROM edge_health WHERE edge_id NOT IN (SELECT edge_id FROM edges)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    finally:
+        _edge_health_lock.release()
+
+
+def edge_health_monitor_loop() -> None:
+    while not _edge_health_stop_event.is_set():
+        refresh_edge_health_once()
+        _edge_health_stop_event.wait(EDGE_HEALTH_POLL_SECONDS)
 
 
 def youtube_to_embed(url: str | None):
@@ -295,6 +705,17 @@ def init_db() -> None:
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS edge_health (
+        edge_id TEXT PRIMARY KEY,
+        is_online INTEGER NOT NULL DEFAULT 0,
+        latency_ms INTEGER,
+        checked_at TEXT,
+        fail_reason TEXT DEFAULT '',
+        FOREIGN KEY(edge_id) REFERENCES edges(edge_id) ON DELETE CASCADE
+    )
+    """)
+
     # -------------------------
     # Distribution Grades (lista de canais)
     # -------------------------
@@ -360,6 +781,7 @@ def init_db() -> None:
                 category TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 source_url TEXT NOT NULL,
+                icon_url TEXT DEFAULT '',
                 kind TEXT NOT NULL DEFAULT 'auto',
                 schedule_start TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -378,6 +800,7 @@ def init_db() -> None:
                 category,
                 provider_id,
                 source_url,
+                icon_url,
                 is_active,
                 sort_order,
                 created_at
@@ -388,6 +811,7 @@ def init_db() -> None:
                 COALESCE(p.name, 'Geral') AS category,
                 c.provider_id,
                 c.source_url,
+                '',
                 c.is_active,
                 c.sort_order,
                 c.created_at
@@ -407,6 +831,7 @@ def init_db() -> None:
             category TEXT NOT NULL,
             provider_id TEXT NOT NULL,
             source_url TEXT NOT NULL,
+            icon_url TEXT DEFAULT '',
             kind TEXT NOT NULL DEFAULT 'auto',
             schedule_start TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
@@ -426,6 +851,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto'")
     if "schedule_start" not in cols:
         cur.execute("ALTER TABLE channels ADD COLUMN schedule_start TEXT")
+    if "icon_url" not in cols:
+        cur.execute("ALTER TABLE channels ADD COLUMN icon_url TEXT DEFAULT ''")
 
     # -------------------------
     # Legacy Channel Items (backward compatibility)
@@ -567,6 +994,22 @@ def init_db() -> None:
 @app.on_event("startup")
 def _startup():
     init_db()
+    refresh_edge_health_once()
+
+    global _edge_health_thread
+    if _edge_health_thread is None or not _edge_health_thread.is_alive():
+        _edge_health_stop_event.clear()
+        _edge_health_thread = threading.Thread(
+            target=edge_health_monitor_loop,
+            name="edge-health-monitor",
+            daemon=True,
+        )
+        _edge_health_thread.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    _edge_health_stop_event.set()
 
 
 def fetch_all(sql: str, args=()) -> List[sqlite3.Row]:
@@ -722,6 +1165,55 @@ def enrich_channel_for_edge(channel_row: sqlite3.Row | Dict[str, Any], edge: sql
     return item
 
 
+def is_admin_authenticated(request: Request) -> bool:
+    return bool(request.session.get("admin_authenticated"))
+
+
+def sanitize_next_path(next_path: str | None) -> str:
+    candidate = (next_path or "").strip()
+    if not candidate.startswith("/"):
+        return "/"
+    if candidate.startswith("//"):
+        return "/"
+    if candidate.startswith("/api/edge/") or candidate.startswith("/iptv/"):
+        return "/"
+    return candidate or "/"
+
+
+class AdminAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path or "/"
+        if path in ADMIN_PUBLIC_PATHS or any(path.startswith(p) for p in ADMIN_PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        if path == "/" or path.startswith("/admin"):
+            if is_admin_authenticated(request):
+                return await call_next(request)
+
+            if request.method in ("GET", "HEAD"):
+                raw_next = path
+                if request.url.query:
+                    raw_next += f"?{request.url.query}"
+                next_path = sanitize_next_path(raw_next)
+                login_url = f"/login?next={quote(next_path, safe='/%?=&')}"
+                return RedirectResponse(login_url, status_code=303)
+            return RedirectResponse("/login", status_code=303)
+
+        return await call_next(request)
+
+
+# Order matters: Session must wrap auth middleware so request.session is available.
+app.add_middleware(AdminAuthMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=ADMIN_SESSION_SECRET,
+    session_cookie="central_admin_session",
+    max_age=ADMIN_SESSION_MAX_AGE,
+    same_site="lax",
+    https_only=ADMIN_SESSION_HTTPS_ONLY,
+)
+
+
 def must_auth_edge(request: Request) -> sqlite3.Row:
     api_key = request.headers.get("X-API-KEY") or request.query_params.get("api_key")
     if not api_key:
@@ -732,10 +1224,65 @@ def must_auth_edge(request: Request) -> sqlite3.Row:
     return edge
 
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/"):
+    next_path = sanitize_next_path(unquote(next or "/"))
+    if is_admin_authenticated(request):
+        return RedirectResponse(next_path or "/", status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "next_path": next_path,
+            "error_message": "",
+        },
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next_path: str = Form("/", alias="next"),
+):
+    target = sanitize_next_path(next_path)
+    username_clean = username.strip()
+    user_ok = secrets.compare_digest(username_clean, ADMIN_USERNAME)
+    password_ok = secrets.compare_digest(password, ADMIN_PASSWORD)
+    if user_ok and password_ok:
+        request.session["admin_authenticated"] = True
+        request.session["admin_username"] = ADMIN_USERNAME
+        return RedirectResponse(target, status_code=303)
+
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "next_path": target,
+            "error_message": "Usuario ou senha invalidos.",
+        },
+        status_code=401,
+    )
+
+
+@app.get("/logout")
+def logout_get(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.post("/logout")
+def logout_post(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     channel_category = (request.query_params.get("channel_category") or "").strip()
     channel_grade_raw = (request.query_params.get("channel_grade_id") or "").strip()
+    channel_provider_id = (request.query_params.get("channel_provider_id") or "").strip()
     edge_country = (request.query_params.get("edge_country") or "").strip()
     edge_state = (request.query_params.get("edge_state") or "").strip()
     edge_city = (request.query_params.get("edge_city") or "").strip()
@@ -758,7 +1305,7 @@ def home(request: Request):
     channel_categories = [r["category"] for r in category_rows]
 
     channel_sql = """
-        SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.kind, c.schedule_start, c.is_active, c.sort_order, c.created_at,
+        SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start, c.is_active, c.sort_order, c.created_at,
                p.name AS provider_name,
                (
                    SELECT COUNT(*)
@@ -778,6 +1325,9 @@ def home(request: Request):
     if channel_category:
         channel_where.append("c.category = ?")
         channel_args.append(channel_category)
+    if channel_provider_id:
+        channel_where.append("c.provider_id = ?")
+        channel_args.append(channel_provider_id)
     if channel_where:
         channel_sql += " WHERE " + " AND ".join(channel_where)
     channel_sql += " ORDER BY p.provider_id, c.sort_order, c.channel_number"
@@ -790,9 +1340,16 @@ def home(request: Request):
     )
 
     edge_sql = """
-        SELECT e.*, g.name AS grade_name
+        SELECT
+            e.*,
+            g.name AS grade_name,
+            COALESCE(h.is_online, 0) AS ping_online,
+            h.latency_ms AS ping_latency_ms,
+            h.checked_at AS ping_checked_at,
+            h.fail_reason AS ping_fail_reason
         FROM edges e
         LEFT JOIN channel_grades g ON g.id = e.grade_id
+        LEFT JOIN edge_health h ON h.edge_id = e.edge_id
     """
     edge_where: List[str] = []
     edge_args: List[Any] = []
@@ -869,6 +1426,7 @@ def home(request: Request):
         "grade_channels": grade_channels,
         "selected_channel_category": channel_category,
         "selected_channel_grade_id": str(channel_grade_id) if channel_grade_id else "",
+        "selected_channel_provider_id": channel_provider_id,
         "edge_countries": edge_countries,
         "edge_states": edge_states,
         "edge_cities": edge_cities,
@@ -950,6 +1508,7 @@ def create_channel(
     category: str = Form(...),
     provider_id: str = Form(...),
     source_url: str = Form(""),
+    icon_file: Optional[UploadFile] = File(None),
     kind: str = Form("auto"),
     schedule_start: str = Form(""),
     sort_order: int = Form(100),
@@ -962,20 +1521,24 @@ def create_channel(
         raise HTTPException(status_code=400, detail="sort_order/is_active must be numeric")
 
     conn = db()
+    saved_icon_url = ""
     try:
         kind_clean = (kind or "auto").strip().lower()
         if kind_clean not in ("auto", "hls", "youtube", "youtube_linear"):
             kind_clean = "auto"
         schedule_clean = schedule_start.strip() or None
+        if icon_file and (icon_file.filename or "").strip():
+            saved_icon_url = save_channel_icon_upload(icon_file)
         conn.execute(
-            """INSERT INTO channels(channel_number,name,category,provider_id,source_url,kind,schedule_start,sort_order,is_active)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO channels(channel_number,name,category,provider_id,source_url,icon_url,kind,schedule_start,sort_order,is_active)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 channel_number.strip(),
                 name.strip(),
                 category.strip(),
                 provider_id,
                 source_url.strip(),
+                saved_icon_url,
                 kind_clean,
                 schedule_clean,
                 sort_order_i,
@@ -988,20 +1551,85 @@ def create_channel(
     except sqlite3.IntegrityError as e:
         msg = str(e)
         if "UNIQUE constraint failed" in msg and "channels.provider_id" in msg:
+            delete_channel_icon_file(saved_icon_url)
             raise HTTPException(
                 status_code=409,
                 detail="Numero de canal ja existe neste Provider. Apague o canal antigo ou use outro numero.",
             )
+        delete_channel_icon_file(saved_icon_url)
         raise HTTPException(status_code=400, detail=f"db integrity error: {msg}")
+    except HTTPException:
+        delete_channel_icon_file(saved_icon_url)
+        raise
+    except Exception:
+        delete_channel_icon_file(saved_icon_url)
+        raise
     finally:
+        if icon_file:
+            try:
+                icon_file.file.close()
+            except Exception:
+                pass
         conn.close()
     return RedirectResponse("/", status_code=303)
 
 
 @app.post("/admin/channels/delete")
 def delete_channel(id: int = Form(...)):
+    row = fetch_one("SELECT icon_url FROM channels WHERE id=?", (id,))
     execute("DELETE FROM channels WHERE id=?", (id,))
+    if row:
+        delete_channel_icon_file(row["icon_url"])
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/admin/channels/icon/update")
+def update_channel_icon(
+    channel_id: int = Form(...),
+    return_channel_id: Optional[int] = Form(None),
+    icon_file: Optional[UploadFile] = File(None),
+):
+    channel = fetch_one("SELECT id, icon_url FROM channels WHERE id=?", (channel_id,))
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found")
+    if not icon_file or not (icon_file.filename or "").strip():
+        raise HTTPException(status_code=400, detail="icon file is required")
+
+    new_icon_url = ""
+    old_icon_url = channel["icon_url"]
+    try:
+        new_icon_url = save_channel_icon_upload(icon_file)
+        execute("UPDATE channels SET icon_url=? WHERE id=?", (new_icon_url, channel_id))
+        if old_icon_url and old_icon_url != new_icon_url:
+            delete_channel_icon_file(old_icon_url)
+    except HTTPException:
+        delete_channel_icon_file(new_icon_url)
+        raise
+    except Exception:
+        delete_channel_icon_file(new_icon_url)
+        raise
+    finally:
+        try:
+            icon_file.file.close()
+        except Exception:
+            pass
+
+    return redirect_home_or_channel(return_channel_id or channel_id)
+
+
+@app.post("/admin/channels/icon/clear")
+def clear_channel_icon(
+    channel_id: int = Form(...),
+    return_channel_id: Optional[int] = Form(None),
+):
+    channel = fetch_one("SELECT id, icon_url FROM channels WHERE id=?", (channel_id,))
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found")
+
+    old_icon_url = channel["icon_url"]
+    execute("UPDATE channels SET icon_url='' WHERE id=?", (channel_id,))
+    delete_channel_icon_file(old_icon_url)
+    return redirect_home_or_channel(return_channel_id or channel_id)
 
 
 @app.get("/admin/channels/{channel_id}", response_class=HTMLResponse)
@@ -1209,11 +1837,14 @@ def gen_api_key() -> str:
 def create_edge(
     edge_id: str = Form(...),
     name: str = Form(...),
-    hls_base_url: str = Form(...),
+    edge_ip: str = Form(""),
+    hls_base_url: str = Form(""),
     country: str = Form(""),
     state: str = Form(""),
     city: str = Form(""),
 ):
+    raw_edge_input = (edge_ip or "").strip() or (hls_base_url or "").strip()
+    normalized_hls_base_url = build_default_hls_base_url(raw_edge_input)
     api_key = gen_api_key()
     execute(
         """INSERT INTO edges(edge_id,name,api_key,hls_base_url,country,state,city,is_active)
@@ -1222,7 +1853,7 @@ def create_edge(
             edge_id.strip(),
             name.strip(),
             api_key,
-            hls_base_url.strip(),
+            normalized_hls_base_url,
             country.strip(),
             state.strip(),
             city.strip(),
@@ -1275,6 +1906,43 @@ def assign_edge_grade(edge_id: str = Form(...), grade_id: str = Form("")):
     return RedirectResponse("/", status_code=303)
 
 
+@app.get("/admin/edges/health")
+def edges_health(refresh: int = 0):
+    if int(refresh or 0) == 1:
+        refresh_edge_health_once()
+
+    rows = fetch_all(
+        """
+        SELECT e.edge_id,
+               e.is_active,
+               COALESCE(h.is_online, 0) AS is_online,
+               h.latency_ms,
+               h.checked_at,
+               h.fail_reason
+        FROM edges e
+        LEFT JOIN edge_health h ON h.edge_id = e.edge_id
+        ORDER BY e.edge_id
+        """
+    )
+    items = [
+        {
+            "edge_id": r["edge_id"],
+            "is_active": int(r["is_active"] or 0),
+            "is_online": int(r["is_online"] or 0),
+            "latency_ms": r["latency_ms"],
+            "checked_at": r["checked_at"],
+            "fail_reason": r["fail_reason"] or "",
+        }
+        for r in rows
+    ]
+    return JSONResponse(
+        {
+            "updated_every_seconds": EDGE_HEALTH_POLL_SECONDS,
+            "items": items,
+        }
+    )
+
+
 @app.get("/admin/edges/{edge_id}/providers", response_class=HTMLResponse)
 def edge_providers_page(edge_id: str, request: Request):
     edge = fetch_one("SELECT * FROM edges WHERE edge_id=?", (edge_id,))
@@ -1314,7 +1982,7 @@ def api_edge_channels(request: Request):
     if edge["grade_id"]:
         rows = fetch_all(
             """
-            SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.kind, c.schedule_start, c.is_active, c.sort_order,
+            SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start, c.is_active, c.sort_order,
                    gc.sort_order AS grade_sort_order
             FROM channel_grade_channels gc
             JOIN channels c ON c.id = gc.channel_id
@@ -1333,7 +2001,7 @@ def api_edge_channels(request: Request):
         # Automatic general grade fallback: all active channels.
         channel_rows = fetch_all(
             """
-            SELECT id, channel_number, name, category, provider_id, source_url, kind, schedule_start, is_active, sort_order
+            SELECT id, channel_number, name, category, provider_id, source_url, icon_url, kind, schedule_start, is_active, sort_order
             FROM channels
             WHERE is_active=1
             ORDER BY provider_id, sort_order, channel_number
@@ -1357,9 +2025,12 @@ def api_edge_channels(request: Request):
     p_names = {r["provider_id"]: r["name"] for r in p_rows}
 
     result = []
+    public_base = str(request.base_url).rstrip("/")
     for pid in provider_order:
         rows = channels_by_provider.get(pid, [])
         enriched = [enrich_channel_for_edge(r, edge) for r in rows]
+        for channel in enriched:
+            channel["icon_url"] = resolve_channel_icon_public_url(channel.get("icon_url"), public_base)
         result.append({
             "provider_id": pid,
             "provider_name": p_names.get(pid, pid),

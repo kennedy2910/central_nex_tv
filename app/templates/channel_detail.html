@@ -26,6 +26,43 @@
   </div>
 
   <div class="card mb-4">
+    <div class="card-header"><b>Icone do Canal (300x300)</b></div>
+    <div class="card-body">
+      <div class="d-flex align-items-center gap-3 mb-3">
+        {% if channel.icon_url %}
+          <img src="{{ channel.icon_url }}" alt="Icone {{ channel.name }}" style="width:72px;height:72px;border-radius:12px;object-fit:cover;border:1px solid #ddd;" onerror="this.onerror=null;this.src='/static/channel-icons/default-channel.svg';">
+          <div>
+            <div><code>{{ channel.icon_url }}</code></div>
+            <div class="small-muted">Icone atual</div>
+          </div>
+        {% else %}
+          <div class="small-muted">Sem icone configurado.</div>
+        {% endif %}
+      </div>
+
+      <form class="row g-2" method="post" action="/admin/channels/icon/update" enctype="multipart/form-data">
+        <input type="hidden" name="channel_id" value="{{ channel.id }}">
+        <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
+        <div class="col-md-9">
+          <label class="form-label mb-1">Selecionar novo icone (PNG/JPG/WebP 300x300)</label>
+          <input class="form-control" type="file" name="icon_file" accept="image/png,image/jpeg,image/webp" required>
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button class="btn btn-primary btn-sm w-100">Atualizar icone</button>
+        </div>
+      </form>
+
+      {% if channel.icon_url %}
+      <form class="mt-3" method="post" action="/admin/channels/icon/clear" onsubmit="return confirm('Remover icone deste canal?');">
+        <input type="hidden" name="channel_id" value="{{ channel.id }}">
+        <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
+        <button class="btn btn-outline-secondary btn-sm">Remover icone</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-4">
     <div class="card-header"><b>Playlists do Canal</b></div>
     <div class="card-body">
       <form class="row g-2" method="post" action="/admin/playlists/create">

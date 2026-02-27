@@ -6,6 +6,10 @@ services:
     environment:
       - DATA_DIR=/data
       - CENTRAL_TITLE=Central-Nex
+      - CENTRAL_ADMIN_USERNAME=admin
+      - CENTRAL_ADMIN_PASSWORD=troque-esta-senha
+      - CENTRAL_SESSION_SECRET=troque-este-segredo-de-sessao
+      - CENTRAL_SESSION_HTTPS_ONLY=0
     volumes:
       - ./data:/data
     ports:

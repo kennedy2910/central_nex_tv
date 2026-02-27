@@ -5,3 +5,5 @@ python-multipart==0.0.9
 pydantic==2.9.2
 
 yt-dlp
+Pillow==11.1.0
+itsdangerous==2.2.0

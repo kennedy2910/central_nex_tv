@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ request.app.title }} - Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0c1220;
+      --surface: #131a2b;
+      --text: #e0f2fe;
+      --muted: #8ea5c8;
+      --primary: #6366f1;
+      --border: rgba(115, 136, 177, 0.24);
+      --danger: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 500px at -5% -10%, rgba(20, 184, 166, 0.14), transparent 55%),
+        radial-gradient(800px 460px at 100% 0%, rgba(99, 102, 241, 0.24), transparent 58%),
+        linear-gradient(150deg, #0a1020 0%, #0c1220 46%, #0a1123 100%);
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 420px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: linear-gradient(170deg, rgba(19, 26, 43, 0.97), rgba(16, 24, 40, 0.97));
+      box-shadow: 0 22px 44px rgba(5, 12, 24, 0.5);
+      padding: 22px;
+    }
+    .brand {
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-size: 28px;
+      margin: 0 0 4px;
+    }
+    .subtitle {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: #a9bfdc;
+    }
+    .field input {
+      height: 44px;
+      border-radius: 10px;
+      border: 1px solid rgba(107, 130, 170, 0.36);
+      background: rgba(24, 35, 58, 0.9);
+      color: var(--text);
+      padding: 0 12px;
+      font-size: 14px;
+      outline: 0;
+    }
+    .field input:focus {
+      border-color: #14b8a6;
+      box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.18);
+    }
+    .error {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(220, 38, 38, 0.35);
+      border-radius: 10px;
+      color: #ffd9d9;
+      background: rgba(220, 38, 38, 0.12);
+      font-size: 13px;
+    }
+    .submit-btn {
+      width: 100%;
+      height: 44px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(140deg, #6d70ff, #4d54d4);
+      color: #eef2ff;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main class="login-card">
+    <h1 class="brand">Central-Nex</h1>
+    <p class="subtitle">Acesso administrativo</p>
+
+    {% if error_message %}
+      <p class="error">{{ error_message }}</p>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{ next_path }}">
+      <label class="field">
+        Usuario
+        <input type="text" name="username" autocomplete="username" required>
+      </label>
+      <label class="field">
+        Senha
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button class="submit-btn" type="submit">Entrar</button>
+    </form>
+  </main>
+</body>
+</html>

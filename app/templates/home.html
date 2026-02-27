@@ -1,376 +1,727 @@
-﻿<!doctype html>
-<html>
+<!doctype html>
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>{{ request.app.title }} - Admin</title>
+  <title>{{ request.app.title }} - Canais</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-  <style>
-    body { padding: 20px; }
-    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
-    .small-muted { color: #666; font-size: .9rem; }
-  </style>
+  <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
-<div class="container">
-  <h1 class="mb-1">Central-Nex</h1>
-  <div class="small-muted mb-4">Canais, Grades e Edges com filtros</div>
-
-  <div class="row g-4">
-    <div class="col-lg-7">
-      <div class="card">
-        <div class="card-header"><b>Providers</b></div>
-        <div class="card-body">
-          <form class="row g-2" method="post" action="/admin/providers/create">
-            <div class="col-md-3"><input class="form-control" name="provider_id" placeholder="prov-001" required></div>
-            <div class="col-md-4"><input class="form-control" name="name" placeholder="Esportes" required></div>
-            <div class="col-md-5"><input class="form-control" name="description" placeholder="descricao (opcional)"></div>
-            <div class="col-12"><button class="btn btn-primary btn-sm">Criar Provider</button></div>
-          </form>
-
-          <hr>
-          <table class="table table-sm align-middle">
-            <thead><tr><th>ID</th><th>Nome</th><th></th></tr></thead>
-            <tbody>
-            {% for p in providers %}
-              <tr>
-                <td><code>{{ p.provider_id }}</code></td>
-                <td>{{ p.name }}</td>
-                <td class="text-end">
-                  <form method="post" action="/admin/providers/delete" onsubmit="return confirm('Excluir provider {{p.provider_id}}?');">
-                    <input type="hidden" name="provider_id" value="{{p.provider_id}}">
-                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card mt-4">
-        <div class="card-header"><b>Canais</b></div>
-        <div class="card-body">
-          <form class="row g-2" method="post" action="/admin/channels/create">
-            <div class="col-md-4">
-              <label class="form-label mb-1">Nome</label>
-              <input class="form-control" name="name" placeholder="ESPN" required>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label mb-1">Categoria</label>
-              <input class="form-control" name="category" placeholder="Esporte" required>
-            </div>
-            <div class="col-md-2">
-              <label class="form-label mb-1">Numero</label>
-              <input class="form-control" name="channel_number" placeholder="004" required>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label mb-1">Provider</label>
-              <select class="form-select" name="provider_id" required>
-                {% for p in providers %}
-                  <option value="{{p.provider_id}}">{{p.name}} ({{p.provider_id}})</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label mb-1">Tipo</label>
-              <select class="form-select" name="kind">
-                <option value="auto">auto</option>
-                <option value="hls">hls</option>
-                <option value="youtube">youtube</option>
-                <option value="youtube_linear">youtube_linear</option>
-              </select>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label mb-1">Ordem</label>
-              <input class="form-control" name="sort_order" type="number" value="100">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label mb-1">Schedule Start (UTC)</label>
-              <input class="form-control" name="schedule_start" placeholder="2026-01-31T00:00:00Z">
-            </div>
-            <div class="col-md-12">
-              <label class="form-label mb-1">Source URL (canal simples)</label>
-              <input class="form-control" name="source_url" placeholder="https://...">
-            </div>
-            <div class="col-12 d-flex gap-2 align-items-center">
-              <input type="hidden" name="is_active" value="1">
-              <button class="btn btn-primary btn-sm">Criar Canal</button>
-              <span class="small-muted">Conteudo/URLs multiplas sao gerenciadas ao abrir o canal.</span>
-            </div>
-          </form>
-
-          <hr>
-          <form class="row g-2" method="get" action="/">
-            <input type="hidden" name="edge_country" value="{{ selected_edge_country }}">
-            <input type="hidden" name="edge_state" value="{{ selected_edge_state }}">
-            <input type="hidden" name="edge_city" value="{{ selected_edge_city }}">
-            <div class="col-md-5">
-              <label class="form-label mb-1">Filtrar por Categoria</label>
-              <select class="form-select" name="channel_category">
-                <option value="">todas</option>
-                {% for cat in channel_categories %}
-                  <option value="{{cat}}" {% if selected_channel_category == cat %}selected{% endif %}>{{cat}}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-5">
-              <label class="form-label mb-1">Filtrar por Grade</label>
-              <select class="form-select" name="channel_grade_id">
-                <option value="">todas</option>
-                {% for g in channel_grades %}
-                  <option value="{{g.id}}" {% if selected_channel_grade_id == (g.id ~ '') %}selected{% endif %}>{{g.name}}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-2 d-flex align-items-end gap-2">
-              <button class="btn btn-outline-primary btn-sm w-100">Filtrar</button>
-            </div>
-          </form>
-
-          <hr>
-          <table class="table table-sm align-middle">
-            <thead><tr><th>Canal</th><th>Provider</th><th>Categoria</th><th>Tipo</th><th>Itens</th><th></th></tr></thead>
-            <tbody>
-            {% for c in channels %}
-              <tr>
-                <td>
-                  <b>{{ c.channel_number }} - {{ c.name }}</b>
-                  <div class="small-muted">ID: <code>{{ c.id }}</code></div>
-                </td>
-                <td>{{ c.provider_name }}<div class="small-muted"><code>{{ c.provider_id }}</code></div></td>
-                <td><code>{{ c.category }}</code></td>
-                <td><code>{{ c.kind }}</code></td>
-                <td><code>{{ c.linear_items_count }}</code></td>
-                <td class="text-end d-flex gap-2 justify-content-end">
-                  <a class="btn btn-outline-primary btn-sm" href="/admin/channels/{{c.id}}">Abrir conteudo</a>
-                  <form method="post" action="/admin/channels/delete" onsubmit="return confirm('Excluir canal {{c.channel_number}} - {{c.name}}?');">
-                    <input type="hidden" name="id" value="{{c.id}}">
-                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card mt-4">
-        <div class="card-header"><b>Grades de Distribuicao (lista de canais)</b></div>
-        <div class="card-body">
-          <form class="row g-2" method="post" action="/admin/channel-grades/create">
-            <div class="col-md-5">
-              <label class="form-label mb-1">Nome da Grade</label>
-              <input class="form-control" name="name" placeholder="grade_esportes" required>
-            </div>
-            <div class="col-md-7">
-              <label class="form-label mb-1">Descricao</label>
-              <input class="form-control" name="description" placeholder="Opcional">
-            </div>
-            <div class="col-12">
-              <button class="btn btn-primary btn-sm">Criar Grade</button>
-            </div>
-          </form>
-
-          <hr>
-          <form class="row g-2" method="post" action="/admin/channel-grades/channels/add">
-            <div class="col-md-5">
-              <label class="form-label mb-1">Grade</label>
-              <select class="form-select" name="grade_id" required>
-                {% for g in channel_grades %}
-                  <option value="{{g.id}}">{{ g.name }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-5">
-              <label class="form-label mb-1">Canal</label>
-              <select class="form-select" name="channel_id" required>
-                {% for c in channels_all %}
-                  <option value="{{c.id}}">{{ c.channel_number }} - {{ c.name }} ({{ c.provider_id }})</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-2">
-              <label class="form-label mb-1">Ordem</label>
-              <input class="form-control" type="number" name="sort_order" value="100">
-            </div>
-            <div class="col-12">
-              <button class="btn btn-outline-primary btn-sm">Adicionar Canal</button>
-            </div>
-          </form>
-
-          <form class="row g-2 mt-1" method="post" action="/admin/channel-grades/delete">
-            <div class="col-md-10">
-              <label class="form-label mb-1">Excluir Grade</label>
-              <select class="form-select" name="grade_id" required>
-                {% for g in channel_grades %}
-                  <option value="{{g.id}}">{{ g.name }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-2 d-flex align-items-end">
-              <button class="btn btn-outline-danger btn-sm w-100" onclick="return confirm('Excluir grade selecionada?');">Excluir</button>
-            </div>
-          </form>
-
-          <hr>
-          <table class="table table-sm align-middle">
-            <thead><tr><th>Grade</th><th>Canal</th><th>Ordem</th><th></th></tr></thead>
-            <tbody>
-            {% for gc in grade_channels %}
-              <tr>
-                <td><code>{{ gc.grade_name }}</code><div class="small-muted">#{{ gc.grade_id }}</div></td>
-                <td>{{ gc.channel_number }} - {{ gc.channel_name }}<div class="small-muted"><code>{{ gc.provider_id }}</code> - {{ gc.provider_name }}</div></td>
-                <td><code>{{ gc.sort_order }}</code></td>
-                <td class="text-end">
-                  <form method="post" action="/admin/channel-grades/channels/remove" onsubmit="return confirm('Remover canal da grade {{gc.grade_name}}?');">
-                    <input type="hidden" name="grade_id" value="{{gc.grade_id}}">
-                    <input type="hidden" name="channel_id" value="{{gc.channel_id}}">
-                    <button class="btn btn-outline-secondary btn-sm">Remover</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
+{% set ns = namespace(inactive=0) %}
+{% for c in channels %}
+  {% if not c.is_active %}
+    {% set ns.inactive = ns.inactive + 1 %}
+  {% endif %}
+{% endfor %}
+{% set notification_count = ns.inactive if ns.inactive > 0 else 3 %}
+<div class="nex-layout">
+  <aside class="nex-sidebar" id="nexSidebar">
+    <div class="nex-sidebar-head">
+      <span class="nex-logo">Central-Nex</span>
+      <button class="sidebar-collapse-btn js-sidebar-toggle" data-toggle="desktop" type="button" aria-label="Recolher menu lateral">
+        <span class="collapse-glyph" aria-hidden="true">&#10094;</span>
+      </button>
     </div>
 
-    <div class="col-lg-5">
-      <div class="card">
-        <div class="card-header"><b>Edges</b></div>
-        <div class="card-body">
-          <form class="row g-2" method="post" action="/admin/edges/create">
-            <div class="col-md-4"><input class="form-control" name="edge_id" placeholder="edge-001" required></div>
-            <div class="col-md-4"><input class="form-control" name="name" placeholder="Edge Sao Paulo" required></div>
-            <div class="col-md-4"><input class="form-control" name="hls_base_url" placeholder="http://EDGE_IP:8080/hls" required></div>
-            <div class="col-md-4"><input class="form-control" name="country" placeholder="Pais"></div>
-            <div class="col-md-4"><input class="form-control" name="state" placeholder="Estado"></div>
-            <div class="col-md-4"><input class="form-control" name="city" placeholder="Cidade"></div>
-            <div class="col-12"><button class="btn btn-primary btn-sm">Criar Edge</button></div>
-          </form>
+    <nav class="nex-nav" aria-label="Menu principal">
+      <a href="#dashboard" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9638;</span>
+        <span class="nex-nav-label">Dashboard</span>
+      </a>
+      <a href="#provider-manager" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9678;</span>
+        <span class="nex-nav-label">Providers</span>
+      </a>
+      <a href="#channel-list" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9635;</span>
+        <span class="nex-nav-label">Canais</span>
+      </a>
+      <a href="#grade-manager" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9641;</span>
+        <span class="nex-nav-label">Edges &amp; Grades</span>
+      </a>
+      <a href="#edges-monitor" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9783;</span>
+        <span class="nex-nav-label">Logs/Monitoramento</span>
+      </a>
+      <a href="#configuracoes" class="nex-nav-item">
+        <span class="nex-nav-icon" aria-hidden="true">&#9881;</span>
+        <span class="nex-nav-label">Configuracoes</span>
+      </a>
+    </nav>
 
-          <hr>
-          <form class="row g-2" method="get" action="/">
-            <input type="hidden" name="channel_category" value="{{ selected_channel_category }}">
-            <input type="hidden" name="channel_grade_id" value="{{ selected_channel_grade_id }}">
-            <div class="col-md-4">
-              <label class="form-label mb-1">Pais</label>
-              <select class="form-select" name="edge_country">
-                <option value="">todos</option>
-                {% for v in edge_countries %}
-                  <option value="{{v}}" {% if selected_edge_country == v %}selected{% endif %}>{{v}}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label mb-1">Estado</label>
-              <select class="form-select" name="edge_state">
-                <option value="">todos</option>
-                {% for v in edge_states %}
-                  <option value="{{v}}" {% if selected_edge_state == v %}selected{% endif %}>{{v}}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label mb-1">Cidade</label>
-              <select class="form-select" name="edge_city">
-                <option value="">todas</option>
-                {% for v in edge_cities %}
-                  <option value="{{v}}" {% if selected_edge_city == v %}selected{% endif %}>{{v}}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-12 d-flex gap-2">
-              <button class="btn btn-outline-primary btn-sm">Filtrar Edges</button>
-              <a class="btn btn-outline-secondary btn-sm" href="/">Limpar</a>
-            </div>
-          </form>
+    <div class="nex-sidebar-foot">
+      <a class="nex-foot-link" href="#">Perfil</a>
+      <a class="nex-foot-link" href="#quick-api">Documentacao</a>
+    </div>
+  </aside>
 
-          <hr>
-          <table class="table table-sm align-middle">
-            <thead><tr><th>Edge</th><th>Local</th><th>Grade</th><th></th></tr></thead>
-            <tbody>
+  <div class="nex-main-wrap">
+    <header class="nex-topbar">
+      <div class="nex-topbar-left">
+        <button class="mobile-menu js-sidebar-toggle" data-toggle="mobile" type="button" aria-label="Abrir menu">&#9776;</button>
+        <label class="nex-global-search" for="globalSearch">
+          <span class="search-ico" aria-hidden="true">&#9906;</span>
+          <input id="globalSearch" type="text" placeholder="Buscar por canal, edge, ID" autocomplete="off">
+        </label>
+      </div>
+      <div class="nex-topbar-actions">
+        <a href="#quick-api" class="nex-btn nex-btn-indigo">Teste R&aacute;pido API</a>
+        <button class="icon-btn" type="button" aria-label="Notificacoes">
+          <span aria-hidden="true">&#128276;</span>
+          <span class="badge-count">{{ notification_count }}</span>
+        </button>
+        <div class="user-menu-wrap">
+          <button class="icon-btn user-btn" type="button" id="userMenuBtn" aria-label="Menu usuario">
+            <span aria-hidden="true">&#9711;</span>
+          </button>
+          <div class="user-menu" id="userMenu">
+            <a href="#">Perfil</a>
+            <a href="#configuracoes">Configuracoes</a>
+            <a href="/logout">Sair</a>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="nex-main-content" id="channel-list">
+      <section class="nex-page-title">
+        <h1>Canais</h1>
+      </section>
+
+      <section class="nex-tabs" aria-label="Navegacao de canais">
+        <button type="button" class="nex-tab is-active" data-tab="all">Todos</button>
+        <button type="button" class="nex-tab" data-tab="category">Por Categoria</button>
+        <button type="button" class="nex-tab" data-tab="grade">Por Grade/Edge</button>
+        <button type="button" class="nex-tab" data-tab="scheduled">Agendados</button>
+        <button type="button" class="nex-tab" data-tab="automatic">Automaticos</button>
+      </section>
+
+      <section class="nex-sticky-filters">
+        <form class="nex-filter-row" method="get" action="/" id="channelFilterForm">
+          <input type="hidden" name="edge_country" value="{{ selected_edge_country }}">
+          <input type="hidden" name="edge_state" value="{{ selected_edge_state }}">
+          <input type="hidden" name="edge_city" value="{{ selected_edge_city }}">
+
+          <select name="channel_category" aria-label="Categoria">
+            <option value="">Categoria</option>
+            {% for cat in channel_categories %}
+              <option value="{{cat}}" {% if selected_channel_category == cat %}selected{% endif %}>{{cat}}</option>
+            {% endfor %}
+          </select>
+
+          <select name="channel_grade_id" aria-label="Grade">
+            <option value="">Grade</option>
+            {% for g in channel_grades %}
+              <option value="{{g.id}}" {% if selected_channel_grade_id == (g.id ~ '') %}selected{% endif %}>{{g.name}}</option>
+            {% endfor %}
+          </select>
+
+          <select name="channel_provider_id" aria-label="Provider">
+            <option value="">Provider</option>
+            {% for p in providers %}
+              <option value="{{p.provider_id}}" {% if selected_channel_provider_id == p.provider_id %}selected{% endif %}>{{p.name}} ({{p.provider_id}})</option>
+            {% endfor %}
+          </select>
+
+          <input id="channelQuickSearch" type="text" placeholder="Busca rapida de canais" autocomplete="off">
+
+          <button class="nex-btn nex-btn-ghost" type="submit">Filtrar</button>
+          <a class="nex-btn nex-btn-teal" href="#create-channel">+ Criar Canal</a>
+        </form>
+      </section>
+
+      <section class="nex-surface channel-surface">
+        <table class="nex-table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>Numero</th>
+              <th>Categoria</th>
+              <th>Provider</th>
+              <th>Status</th>
+              <th>Acoes</th>
+            </tr>
+          </thead>
+          <tbody id="channelTableBody">
+          {% for c in channels %}
+            <tr class="channel-row"
+                data-search="{{ (c.channel_number ~ ' ' ~ c.name ~ ' ' ~ c.category ~ ' ' ~ c.provider_id ~ ' ' ~ c.provider_name)|lower }}"
+                data-kind="{{ (c.kind or '')|lower }}"
+                data-scheduled="{{ 1 if c.schedule_start else 0 }}"
+                data-category="{{ (c.category or '')|lower }}"
+                data-provider="{{ (c.provider_id ~ ' ' ~ c.provider_name)|lower }}">
+              <td>
+                <div class="channel-main">
+                  {% if c.icon_url %}
+                  <img class="channel-avatar-img" src="{{ c.icon_url }}" alt="Icone {{ c.name }}" onerror="this.onerror=null;this.src='/static/channel-icons/default-channel.svg';">
+                  {% else %}
+                  <div class="channel-avatar">{{ (c.name[0] if c.name else 'C')|upper }}</div>
+                  {% endif %}
+                  <div>
+                    <div class="channel-name">{{ c.name }}</div>
+                    <div class="channel-meta">ID {{ c.id }}{% if c.schedule_start %} | {{ c.schedule_start }}{% endif %}</div>
+                  </div>
+                </div>
+              </td>
+              <td class="mono">{{ c.channel_number }}</td>
+              <td><span class="pill">{{ c.category }}</span></td>
+              <td>
+                <div class="provider-name">{{ c.provider_name }}</div>
+                <div class="provider-id">{{ c.provider_id }}</div>
+              </td>
+              <td>
+                <span class="status-pill {% if c.is_active %}is-online{% else %}is-offline{% endif %}">
+                  <span class="dot"></span>
+                  {% if c.is_active %}Online{% else %}Offline{% endif %}
+                </span>
+              </td>
+              <td>
+                <div class="table-actions">
+                  <a class="nex-btn nex-btn-inline" href="/admin/channels/{{c.id}}">Abrir</a>
+                  <a class="nex-btn nex-btn-inline is-secondary" href="/admin/channels/{{c.id}}?mode=test">Testar</a>
+                  <form method="post" action="/admin/channels/delete" onsubmit="return confirm('Excluir canal {{c.channel_number}} - {{c.name}}?');">
+                    <input type="hidden" name="id" value="{{c.id}}">
+                    <button class="nex-btn nex-btn-inline is-danger" type="submit">Excluir</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="nex-empty">Nenhum canal encontrado.</td></tr>
+          {% endfor %}
+            <tr id="noResultsRow" class="is-hidden"><td colspan="6" class="nex-empty">Nenhum canal atende aos filtros atuais.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="nex-surface" id="edges-monitor">
+        <div class="surface-head">
+          <h2>Edges Online</h2>
+          <div class="surface-actions">
+            <a class="nex-btn nex-btn-indigo" href="#create-edge">+ Criar Edge</a>
+            <a class="nex-btn nex-btn-ghost" href="#edge-assign-grade">+ Vincular Grade</a>
+          </div>
+        </div>
+
+        <form class="edge-filter-row" method="get" action="/">
+          <input type="hidden" name="channel_category" value="{{ selected_channel_category }}">
+          <input type="hidden" name="channel_grade_id" value="{{ selected_channel_grade_id }}">
+          <input type="hidden" name="channel_provider_id" value="{{ selected_channel_provider_id }}">
+
+          <select name="edge_country" aria-label="Pais">
+            <option value="">Pais</option>
+            {% for v in edge_countries %}
+              <option value="{{v}}" {% if selected_edge_country == v %}selected{% endif %}>{{v}}</option>
+            {% endfor %}
+          </select>
+
+          <select name="edge_state" aria-label="Estado">
+            <option value="">Estado</option>
+            {% for v in edge_states %}
+              <option value="{{v}}" {% if selected_edge_state == v %}selected{% endif %}>{{v}}</option>
+            {% endfor %}
+          </select>
+
+          <select name="edge_city" aria-label="Cidade">
+            <option value="">Cidade</option>
+            {% for v in edge_cities %}
+              <option value="{{v}}" {% if selected_edge_city == v %}selected{% endif %}>{{v}}</option>
+            {% endfor %}
+          </select>
+
+          <button type="submit" class="nex-btn nex-btn-ghost">Filtrar Edges</button>
+          <a href="/" class="nex-btn nex-btn-ghost">Limpar</a>
+        </form>
+
+        <table class="nex-table edge-table">
+          <thead>
+            <tr>
+              <th>Edge</th>
+              <th>Local</th>
+              <th>Grade</th>
+              <th>API Key</th>
+              <th>Acoes</th>
+            </tr>
+          </thead>
+          <tbody>
             {% for e in edges %}
-              <tr>
-                <td>
-                  <b>{{ e.name }}</b>
-                  <div class="small-muted"><code>{{ e.edge_id }}</code></div>
-                  <div class="small-muted"><code>{{ e.api_key }}</code></div>
-                </td>
-                <td>
-                  <div>{{ e.country or '-' }} / {{ e.state or '-' }} / {{ e.city or '-' }}</div>
-                  <div class="small-muted"><code>{{ e.hls_base_url }}</code></div>
-                </td>
-                <td><code>{{ e.grade_name or "grade_geral_auto" }}</code></td>
-                <td class="text-end">
-                  <form class="mb-2" method="post" action="/admin/edges/rotate_key" onsubmit="return confirm('Girar API key do edge {{e.edge_id}}?');">
+            <tr class="edge-row" data-edge-id="{{ e.edge_id }}" data-search="{{ (e.edge_id ~ ' ' ~ e.name ~ ' ' ~ (e.country or '') ~ ' ' ~ (e.state or '') ~ ' ' ~ (e.city or ''))|lower }}">
+              <td>
+                <div class="edge-name">{{ e.name }}</div>
+                <div class="edge-meta">{{ e.edge_id }}</div>
+                <span class="status-pill {% if e.ping_online %}is-online{% else %}is-offline{% endif %}" data-edge-status data-edge-id="{{ e.edge_id }}" title="{% if e.ping_checked_at %}Ultima verificacao: {{ e.ping_checked_at }}{% endif %}">
+                  <span class="dot"></span>
+                  <span class="status-label">{% if e.ping_online %}Online{% else %}Offline{% endif %}</span>
+                </span>
+              </td>
+              <td>{{ e.country or '-' }} / {{ e.state or '-' }} / {{ e.city or '-' }}</td>
+              <td><span class="pill">{{ e.grade_name or 'grade_geral_auto' }}</span></td>
+              <td class="mono">{{ e.api_key }}</td>
+              <td>
+                <div class="table-actions">
+                  <a class="nex-btn nex-btn-inline" href="/admin/edges/{{e.edge_id}}/providers">Providers</a>
+                  <form method="post" action="/admin/edges/rotate_key" onsubmit="return confirm('Girar API key do edge {{e.edge_id}}?');">
                     <input type="hidden" name="edge_id" value="{{e.edge_id}}">
-                    <button class="btn btn-outline-secondary btn-sm">Girar Key</button>
+                    <button class="nex-btn nex-btn-inline is-secondary" type="submit">Girar Key</button>
                   </form>
                   <form method="post" action="/admin/edges/delete" onsubmit="return confirm('Excluir edge {{e.edge_id}}?');">
                     <input type="hidden" name="edge_id" value="{{e.edge_id}}">
-                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
+                    <button class="nex-btn nex-btn-inline is-danger" type="submit">Excluir</button>
                   </form>
-                </td>
-              </tr>
+                </div>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="nex-empty">Nenhum edge encontrado.</td></tr>
             {% endfor %}
-            </tbody>
-          </table>
+          </tbody>
+        </table>
+      </section>
 
-          <form class="row g-2" method="post" action="/admin/edges/update-location">
-            <div class="col-md-4">
-              <label class="form-label mb-1">Edge</label>
-              <select class="form-select" name="edge_id" required>
-                {% for e in edges %}
-                  <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-3"><label class="form-label mb-1">Pais</label><input class="form-control" name="country"></div>
-            <div class="col-md-3"><label class="form-label mb-1">Estado</label><input class="form-control" name="state"></div>
-            <div class="col-md-2"><label class="form-label mb-1">Cidade</label><input class="form-control" name="city"></div>
-            <div class="col-12"><button class="btn btn-outline-primary btn-sm">Atualizar localizacao</button></div>
-          </form>
-
-          <hr>
-          <form class="row g-2" method="post" action="/admin/edges/assign-grade">
-            <div class="col-md-4">
-              <label class="form-label mb-1">Edge</label>
-              <select class="form-select" name="edge_id" required>
-                {% for e in edges %}
-                  <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label mb-1">Grade</label>
-              <select class="form-select" name="grade_id">
-                <option value="">grade_geral_auto (todos canais ativos)</option>
-                {% for g in channel_grades %}
-                  <option value="{{g.id}}">{{ g.name }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-2 d-flex align-items-end">
-              <button class="btn btn-primary btn-sm w-100">Vincular</button>
-            </div>
-          </form>
+      <section class="nex-surface" id="quick-api">
+        <div class="surface-head">
+          <h2>Teste Rapido API</h2>
         </div>
-      </div>
-
-      <div class="card mt-4">
-        <div class="card-header"><b>Teste rapido</b></div>
-        <div class="card-body">
-<pre class="mb-0"><code>curl -H "X-API-KEY: edge_xxx" http://CENTRAL_IP:9000/api/edge/channels
+<pre class="quick-api-code"><code>curl -H "X-API-KEY: edge_xxx" http://CENTRAL_IP:9000/api/edge/channels
 curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
+      </section>
+
+      <section class="nex-admin" id="dashboard">
+        <h2>Painel Operacional</h2>
+        <div class="ops-grid" id="configuracoes">
+          <details class="ops-card" open id="create-channel">
+            <summary>Criar Canal</summary>
+            <form class="ops-form-grid" method="post" action="/admin/channels/create" enctype="multipart/form-data">
+              <label>Nome<input name="name" placeholder="ESPN" required></label>
+              <label>Categoria<input name="category" placeholder="Esporte" required></label>
+              <label>Numero<input name="channel_number" placeholder="004" required></label>
+              <label>Provider
+                <select name="provider_id" required>
+                  {% for p in providers %}
+                    <option value="{{p.provider_id}}">{{p.name}} ({{p.provider_id}})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Tipo
+                <select name="kind">
+                  <option value="auto">auto</option>
+                  <option value="hls">hls</option>
+                  <option value="youtube">youtube</option>
+                  <option value="youtube_linear">youtube_linear</option>
+                </select>
+              </label>
+              <label>Icone 300x300<input type="file" name="icon_file" accept="image/png,image/jpeg,image/webp"></label>
+              <label>Ordem<input name="sort_order" type="number" value="100"></label>
+              <label class="span-2">Schedule Start (UTC)<input name="schedule_start" placeholder="2026-01-31T00:00:00Z"></label>
+              <label class="span-2">Source URL<input name="source_url" placeholder="https://..."></label>
+              <input type="hidden" name="is_active" value="1">
+              <button class="nex-btn nex-btn-indigo" type="submit">Criar Canal</button>
+            </form>
+          </details>
+
+          <details class="ops-card" id="provider-manager">
+            <summary>Providers</summary>
+            <form class="ops-form-grid" method="post" action="/admin/providers/create">
+              <label>ID<input name="provider_id" placeholder="prov-001" required></label>
+              <label>Nome<input name="name" placeholder="Esportes" required></label>
+              <label class="span-2">Descricao<input name="description" placeholder="descricao (opcional)"></label>
+              <button class="nex-btn nex-btn-indigo" type="submit">Criar Provider</button>
+            </form>
+            <table class="nex-table compact-table">
+              <thead><tr><th>ID</th><th>Nome</th><th></th></tr></thead>
+              <tbody>
+              {% for p in providers %}
+                <tr>
+                  <td class="mono">{{ p.provider_id }}</td>
+                  <td>{{ p.name }}</td>
+                  <td>
+                    <form method="post" action="/admin/providers/delete" onsubmit="return confirm('Excluir provider {{p.provider_id}}?');">
+                      <input type="hidden" name="provider_id" value="{{p.provider_id}}">
+                      <button class="nex-btn nex-btn-inline is-danger" type="submit">Excluir</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </details>
+
+          <details class="ops-card" id="grade-manager">
+            <summary>Grades de Distribuicao</summary>
+            <form class="ops-form-grid" method="post" action="/admin/channel-grades/create">
+              <label>Nome da Grade<input name="name" placeholder="grade_esportes" required></label>
+              <label class="span-2">Descricao<input name="description" placeholder="Opcional"></label>
+              <button class="nex-btn nex-btn-indigo" type="submit">Criar Grade</button>
+            </form>
+
+            <form class="ops-form-grid" method="post" action="/admin/channel-grades/channels/add">
+              <label>Grade
+                <select name="grade_id" required>
+                  {% for g in channel_grades %}
+                    <option value="{{g.id}}">{{ g.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Canal
+                <select name="channel_id" required>
+                  {% for c in channels_all %}
+                    <option value="{{c.id}}">{{ c.channel_number }} - {{ c.name }} ({{ c.provider_id }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Ordem<input type="number" name="sort_order" value="100"></label>
+              <button class="nex-btn nex-btn-ghost" type="submit">Adicionar Canal</button>
+            </form>
+
+            <form class="ops-form-grid" method="post" action="/admin/channel-grades/delete">
+              <label class="span-2">Excluir Grade
+                <select name="grade_id" required>
+                  {% for g in channel_grades %}
+                    <option value="{{g.id}}">{{ g.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button class="nex-btn nex-btn-inline is-danger" type="submit" onclick="return confirm('Excluir grade selecionada?');">Excluir</button>
+            </form>
+
+            <table class="nex-table compact-table">
+              <thead><tr><th>Grade</th><th>Canal</th><th>Ordem</th><th></th></tr></thead>
+              <tbody>
+              {% for gc in grade_channels %}
+                <tr>
+                  <td>{{ gc.grade_name }}<div class="channel-meta">#{{ gc.grade_id }}</div></td>
+                  <td>{{ gc.channel_number }} - {{ gc.channel_name }}<div class="channel-meta">{{ gc.provider_id }} - {{ gc.provider_name }}</div></td>
+                  <td class="mono">{{ gc.sort_order }}</td>
+                  <td>
+                    <form method="post" action="/admin/channel-grades/channels/remove" onsubmit="return confirm('Remover canal da grade {{gc.grade_name}}?');">
+                      <input type="hidden" name="grade_id" value="{{gc.grade_id}}">
+                      <input type="hidden" name="channel_id" value="{{gc.channel_id}}">
+                      <button class="nex-btn nex-btn-inline" type="submit">Remover</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </details>
+
+          <details class="ops-card" id="create-edge">
+            <summary>Gestao de Edges</summary>
+            <form class="ops-form-grid" method="post" action="/admin/edges/create">
+              <label>Edge ID<input name="edge_id" placeholder="edge-001" required></label>
+              <label>Nome<input name="name" placeholder="Edge Sao Paulo" required></label>
+              <label>IP do Edge<input name="edge_ip" placeholder="10.10.0.25" required></label>
+              <label>Pais<input name="country" placeholder="Pais"></label>
+              <label>Estado<input name="state" placeholder="Estado"></label>
+              <label>Cidade<input name="city" placeholder="Cidade"></label>
+              <button class="nex-btn nex-btn-indigo" type="submit">Criar Edge</button>
+            </form>
+
+            <form class="ops-form-grid" method="post" action="/admin/edges/update-location">
+              <label>Edge
+                <select name="edge_id" required>
+                  {% for e in edges %}
+                    <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Pais<input name="country"></label>
+              <label>Estado<input name="state"></label>
+              <label>Cidade<input name="city"></label>
+              <button class="nex-btn nex-btn-ghost" type="submit">Atualizar localizacao</button>
+            </form>
+
+            <form class="ops-form-grid" method="post" action="/admin/edges/assign-grade" id="edge-assign-grade">
+              <label>Edge
+                <select name="edge_id" required>
+                  {% for e in edges %}
+                    <option value="{{e.edge_id}}">{{ e.edge_id }} ({{ e.name }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Grade
+                <select name="grade_id">
+                  <option value="">grade_geral_auto (todos canais ativos)</option>
+                  {% for g in channel_grades %}
+                    <option value="{{g.id}}">{{ g.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button class="nex-btn nex-btn-teal" type="submit">Vincular Grade</button>
+            </form>
+          </details>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 </div>
+
+<div class="fab-wrap">
+  <button class="nex-fab" id="nexFab" type="button" aria-label="Acoes rapidas">+</button>
+  <div class="nex-fab-menu" id="nexFabMenu">
+    <a href="#create-channel">Duplicar</a>
+    <a href="#edge-assign-grade">Vincular Edge</a>
+    <a href="#grade-manager">Ver Schedule</a>
+  </div>
+</div>
+
+<script>
+(function () {
+  const body = document.body;
+  const desktopSidebarButton = document.querySelector('.js-sidebar-toggle[data-toggle="desktop"]');
+  const mobileSidebarButton = document.querySelector('.js-sidebar-toggle[data-toggle="mobile"]');
+  const sidebarNavLinks = Array.from(document.querySelectorAll('.nex-nav .nex-nav-item[href^="#"]'));
+  const mobileView = window.matchMedia('(max-width: 1050px)');
+  const tabs = document.querySelectorAll('.nex-tab');
+  const channelRows = Array.from(document.querySelectorAll('.channel-row'));
+  const edgeRows = Array.from(document.querySelectorAll('.edge-row'));
+  const edgeStatusElements = Array.from(document.querySelectorAll('[data-edge-status]'));
+  const quickSearch = document.getElementById('channelQuickSearch');
+  const globalSearch = document.getElementById('globalSearch');
+  const noResultsRow = document.getElementById('noResultsRow');
+  const userMenuBtn = document.getElementById('userMenuBtn');
+  const userMenu = document.getElementById('userMenu');
+  const fab = document.getElementById('nexFab');
+  const fabMenu = document.getElementById('nexFabMenu');
+
+  let activeTab = 'all';
+  const hasGradeFilter = "{{ selected_channel_grade_id }}" !== '';
+  const SIDEBAR_STORAGE_KEY = 'nex-sidebar-collapsed';
+
+  function setSidebarState(collapsed) {
+    body.classList.toggle('sidebar-collapsed', collapsed);
+    if (!mobileView.matches) {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? '1' : '0');
+    }
+  }
+
+  function applySidebarForViewport() {
+    if (mobileView.matches) {
+      body.classList.remove('sidebar-collapsed');
+      return;
+    }
+    const savedSidebar = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    body.classList.toggle('sidebar-collapsed', savedSidebar === '1');
+  }
+
+  function setActiveSidebarItem(link) {
+    if (!link) {
+      return;
+    }
+    sidebarNavLinks.forEach((item) => item.classList.remove('is-active'));
+    link.classList.add('is-active');
+  }
+
+  function updateSidebarActiveFromHash(rawHash, fallbackToChannel) {
+    const hash = (rawHash || '').trim();
+    if (!hash || hash === '#') {
+      if (fallbackToChannel) {
+        const channelLink = sidebarNavLinks.find((item) => item.getAttribute('href') === '#channel-list');
+        setActiveSidebarItem(channelLink || sidebarNavLinks[0]);
+      }
+      return;
+    }
+
+    const targetLink = sidebarNavLinks.find((item) => item.getAttribute('href') === hash);
+    if (targetLink) {
+      setActiveSidebarItem(targetLink);
+    } else if (fallbackToChannel) {
+      const channelLink = sidebarNavLinks.find((item) => item.getAttribute('href') === '#channel-list');
+      setActiveSidebarItem(channelLink || sidebarNavLinks[0]);
+    }
+  }
+
+  applySidebarForViewport();
+  updateSidebarActiveFromHash(window.location.hash, true);
+  if (mobileView.addEventListener) {
+    mobileView.addEventListener('change', applySidebarForViewport);
+  } else if (mobileView.addListener) {
+    mobileView.addListener(applySidebarForViewport);
+  }
+
+  sidebarNavLinks.forEach((link) => {
+    link.addEventListener('click', () => {
+      setActiveSidebarItem(link);
+    });
+  });
+
+  window.addEventListener('hashchange', () => {
+    updateSidebarActiveFromHash(window.location.hash, false);
+  });
+
+  if (desktopSidebarButton) {
+    desktopSidebarButton.addEventListener('click', () => {
+      if (mobileView.matches) {
+        setSidebarState(false);
+        return;
+      }
+      setSidebarState(!body.classList.contains('sidebar-collapsed'));
+    });
+  }
+
+  if (mobileSidebarButton) {
+    mobileSidebarButton.addEventListener('click', () => {
+      if (mobileView.matches) {
+        body.classList.toggle('sidebar-collapsed');
+        return;
+      }
+      setSidebarState(!body.classList.contains('sidebar-collapsed'));
+    });
+  }
+
+  function matchTab(row) {
+    const kind = row.dataset.kind || '';
+    const scheduled = row.dataset.scheduled === '1';
+
+    if (activeTab === 'scheduled') {
+      return scheduled;
+    }
+    if (activeTab === 'automatic') {
+      return kind === 'auto';
+    }
+    if (activeTab === 'grade') {
+      return hasGradeFilter || kind === 'youtube_linear';
+    }
+    if (activeTab === 'category') {
+      return (row.dataset.category || '') !== '';
+    }
+    return true;
+  }
+
+  function applyFilters() {
+    const quick = (quickSearch?.value || '').trim().toLowerCase();
+    const global = (globalSearch?.value || '').trim().toLowerCase();
+    let visible = 0;
+
+    channelRows.forEach((row) => {
+      const search = row.dataset.search || '';
+      const textOk = (!quick || search.includes(quick)) && (!global || search.includes(global));
+      const show = textOk && matchTab(row);
+      row.classList.toggle('is-hidden', !show);
+      if (show) {
+        visible += 1;
+      }
+    });
+
+    if (noResultsRow) {
+      noResultsRow.classList.toggle('is-hidden', visible > 0);
+    }
+
+    edgeRows.forEach((row) => {
+      const text = row.dataset.search || '';
+      const show = !global || text.includes(global);
+      row.classList.toggle('is-hidden', !show);
+    });
+  }
+
+  function applyEdgeStatusPayload(items) {
+    if (!Array.isArray(items)) {
+      return;
+    }
+
+    const byEdgeId = new Map();
+    items.forEach((item) => {
+      if (item && item.edge_id) {
+        byEdgeId.set(String(item.edge_id), item);
+      }
+    });
+
+    edgeStatusElements.forEach((pill) => {
+      const edgeId = pill.getAttribute('data-edge-id');
+      const payload = edgeId ? byEdgeId.get(edgeId) : null;
+      if (!payload) {
+        return;
+      }
+
+      const online = Number(payload.is_online) === 1;
+      pill.classList.toggle('is-online', online);
+      pill.classList.toggle('is-offline', !online);
+
+      const label = pill.querySelector('.status-label');
+      if (label) {
+        label.textContent = online ? 'Online' : 'Offline';
+      }
+
+      const checkedAt = payload.checked_at ? String(payload.checked_at) : '';
+      const latency = payload.latency_ms != null ? ` | ${payload.latency_ms}ms` : '';
+      const failReason = payload.fail_reason ? ` | ${payload.fail_reason}` : '';
+      pill.title = checkedAt ? `Ultima verificacao: ${checkedAt}${latency}${failReason}` : '';
+    });
+  }
+
+  async function refreshEdgeHealth() {
+    if (!edgeStatusElements.length) {
+      return;
+    }
+    try {
+      const response = await fetch('/admin/edges/health', { cache: 'no-store' });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      applyEdgeStatusPayload(payload.items || []);
+    } catch (err) {
+      // Ignore transient connectivity errors in the admin UI.
+    }
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      tabs.forEach((item) => item.classList.remove('is-active'));
+      tab.classList.add('is-active');
+      activeTab = tab.dataset.tab || 'all';
+      applyFilters();
+    });
+  });
+
+  if (quickSearch) {
+    quickSearch.addEventListener('input', applyFilters);
+  }
+  if (globalSearch) {
+    globalSearch.addEventListener('input', applyFilters);
+  }
+
+  if (userMenuBtn && userMenu) {
+    userMenuBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      userMenu.classList.toggle('is-open');
+    });
+    document.addEventListener('click', (event) => {
+      if (!userMenu.contains(event.target) && event.target !== userMenuBtn) {
+        userMenu.classList.remove('is-open');
+      }
+    });
+  }
+
+  if (fab && fabMenu) {
+    fab.addEventListener('click', () => {
+      fabMenu.classList.toggle('is-open');
+    });
+    document.addEventListener('click', (event) => {
+      if (!fabMenu.contains(event.target) && event.target !== fab) {
+        fabMenu.classList.remove('is-open');
+      }
+    });
+  }
+
+  document.querySelectorAll('a[href="#create-channel"]').forEach((link) => {
+    link.addEventListener('click', () => {
+      const details = document.getElementById('create-channel');
+      if (details && details.tagName.toLowerCase() === 'details') {
+        details.open = true;
+      }
+    });
+  });
+
+  applyFilters();
+  refreshEdgeHealth();
+  setInterval(refreshEdgeHealth, 30000);
+})();
+</script>
 </body>
 </html>
