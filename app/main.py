@@ -144,6 +144,15 @@ def normalize_channel_kind(raw_kind: str | None, source_url: str) -> str:
     return kind_raw
 
 
+def parse_checkbox_flag(raw: Any, default: int = 0) -> int:
+    if raw is None:
+        return 1 if default else 0
+    val = str(raw).strip().lower()
+    if val in ("", "0", "false", "off", "no"):
+        return 0
+    return 1
+
+
 # Optional dependency for YouTube metadata (duration/title)
 try:
     import yt_dlp  # type: ignore
@@ -189,11 +198,37 @@ DEFAULT_CHANNEL_ICON_FILENAME = "default-channel.svg"
 DEFAULT_CHANNEL_ICON_URL = f"{CHANNEL_ICON_URL_PREFIX}/{DEFAULT_CHANNEL_ICON_FILENAME}"
 os.makedirs(CHANNEL_ICON_DIR, exist_ok=True)
 
+BANNER_AD_IMAGE_SUBDIR = "banner-ads"
+BANNER_AD_IMAGE_URL_PREFIX = f"/static/{BANNER_AD_IMAGE_SUBDIR}"
+BANNER_AD_IMAGE_DIR = os.path.join(BASE_DIR, "static", BANNER_AD_IMAGE_SUBDIR)
+os.makedirs(BANNER_AD_IMAGE_DIR, exist_ok=True)
+
 EDGE_HEALTH_POLL_SECONDS = max(5, int(os.getenv("EDGE_HEALTH_POLL_SECONDS", "30")))
 EDGE_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("EDGE_PING_TIMEOUT_SECONDS", "2")))
 _edge_health_lock = threading.Lock()
 _edge_health_stop_event = threading.Event()
 _edge_health_thread: Optional[threading.Thread] = None
+YT_WATCH_ENABLED = os.getenv("YT_WATCH_ENABLED", "1") == "1"
+YT_WATCH_POLL_SECONDS = max(15, int(os.getenv("YT_WATCH_POLL_SECONDS", "60")))
+YT_WATCH_DEFAULT_INTERVAL_SECONDS = max(
+    15,
+    int(os.getenv("YT_WATCH_DEFAULT_INTERVAL_SECONDS", "60")),
+)
+YT_WATCH_SCHEDULE_LOOKAHEAD_SECONDS = max(
+    60,
+    int(os.getenv("YT_WATCH_SCHEDULE_LOOKAHEAD_SECONDS", "1800")),
+)
+YT_WATCH_SCHEDULE_POLL_SECONDS = max(
+    5,
+    int(os.getenv("YT_WATCH_SCHEDULE_POLL_SECONDS", "5")),
+)
+YT_WATCH_POST_SCHEDULE_FAST_SECONDS = max(
+    60,
+    int(os.getenv("YT_WATCH_POST_SCHEDULE_FAST_SECONDS", "900")),
+)
+_yt_watch_stop_event = threading.Event()
+_yt_watch_thread: Optional[threading.Thread] = None
+_yt_watch_schedule_cache: Dict[int, datetime] = {}
 
 
 def utc_now_iso() -> str:
@@ -411,6 +446,121 @@ def resolve_channel_icon_public_url(icon_url: str | None, public_base: str) -> s
     if raw:
         return f"{public_base}/{raw.lstrip('/')}"
     return f"{public_base}{DEFAULT_CHANNEL_ICON_URL}"
+
+
+def save_banner_ad_image_upload(image_file: UploadFile) -> str:
+    if not image_file:
+        raise HTTPException(status_code=400, detail="image file is missing")
+
+    raw = image_file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="image file is empty")
+
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="image file too large (max 10MB)")
+
+    info = detect_image_info(raw)
+    if not info:
+        raise HTTPException(status_code=400, detail="invalid image file")
+
+    fmt, width, height = info
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="invalid image dimensions")
+
+    ext_map = {
+        "png": ".png",
+        "jpeg": ".jpg",
+        "jpg": ".jpg",
+        "webp": ".webp",
+    }
+    ext = ext_map.get(fmt.lower(), ".img")
+    filename = f"{secrets.token_hex(16)}{ext}"
+    image_path = os.path.join(BANNER_AD_IMAGE_DIR, filename)
+    try:
+        if Image is not None:
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+            image_path = os.path.join(BANNER_AD_IMAGE_DIR, f"{secrets.token_hex(16)}.png")
+            image.convert("RGBA").save(image_path, format="PNG", optimize=True)
+            filename = os.path.basename(image_path)
+        else:
+            with open(image_path, "wb") as f:
+                f.write(raw)
+    except Exception:
+        raise HTTPException(status_code=500, detail="failed to save banner image")
+
+    return f"{BANNER_AD_IMAGE_URL_PREFIX}/{filename}"
+
+
+def delete_banner_ad_image_file(image_url: str | None) -> None:
+    image = (image_url or "").strip()
+    if not image.startswith(f"{BANNER_AD_IMAGE_URL_PREFIX}/"):
+        return
+    filename = os.path.basename(image)
+    if not filename:
+        return
+    image_path = os.path.join(BANNER_AD_IMAGE_DIR, filename)
+    if os.path.exists(image_path):
+        try:
+            os.remove(image_path)
+        except Exception:
+            pass
+
+
+def banner_ad_image_file_exists_for_url(image_url: str) -> bool:
+    image = (image_url or "").strip()
+    if not image.startswith(f"{BANNER_AD_IMAGE_URL_PREFIX}/"):
+        return False
+    filename = os.path.basename(image)
+    if not filename:
+        return False
+    return os.path.exists(os.path.join(BANNER_AD_IMAGE_DIR, filename))
+
+
+def resolve_banner_ad_image_public_url(image_url: str | None, public_base: str) -> str:
+    raw = (image_url or "").strip()
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    if raw.startswith("/"):
+        if raw.startswith(f"{BANNER_AD_IMAGE_URL_PREFIX}/") and not banner_ad_image_file_exists_for_url(raw):
+            return ""
+        return f"{public_base}{raw}"
+    if raw.startswith("static/"):
+        normalized = "/" + raw
+        if normalized.startswith(f"{BANNER_AD_IMAGE_URL_PREFIX}/") and not banner_ad_image_file_exists_for_url(normalized):
+            return ""
+        return f"{public_base}{normalized}"
+    if raw:
+        return f"{public_base}/{raw.lstrip('/')}"
+    return ""
+
+
+def normalize_banner_start_time(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", value):
+        raise HTTPException(status_code=400, detail="start_time must be in HH:MM format")
+    hour = int(value[:2])
+    minute = int(value[3:5])
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise HTTPException(status_code=400, detail="start_time must be a valid HH:MM")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def compute_banner_interval_minutes(repeat_count_per_day: int) -> float:
+    count = max(1, int(repeat_count_per_day))
+    return 1440.0 / float(count)
+
+
+def format_banner_interval_label(repeat_count_per_day: int) -> str:
+    interval_minutes = compute_banner_interval_minutes(repeat_count_per_day)
+    if interval_minutes >= 60:
+        hours = interval_minutes / 60.0
+        if abs(hours - round(hours)) < 0.001:
+            return f"a cada {int(round(hours))}h"
+        return f"a cada {hours:.1f}h"
+    if abs(interval_minutes - round(interval_minutes)) < 0.001:
+        return f"a cada {int(round(interval_minutes))}min"
+    return f"a cada {interval_minutes:.1f}min"
 
 
 def resolve_ping_ip(host: str) -> str | None:
@@ -649,6 +799,234 @@ def youtube_metadata(url: str) -> dict:
     }
 
 
+def normalize_youtube_watch_url(raw_url: str | None) -> str:
+    val = (raw_url or "").strip()
+    if not val:
+        return ""
+    if val.startswith("@"):
+        val = f"https://www.youtube.com/{val}"
+    if "://" not in val:
+        val = "https://" + val
+    return val
+
+
+def extract_live_watch_url_from_html(html: str) -> str | None:
+    if not html:
+        return None
+    lowered = html.lower()
+    if '"islivenow":true' not in lowered:
+        return None
+    if '"isupcoming":true' in lowered or '"upcomingeventdata"' in lowered:
+        return None
+
+    match = re.search(r'"canonicalBaseUrl":"(/watch\?v=[A-Za-z0-9_-]{6,})"', html)
+    if match:
+        canonical = match.group(1).replace("\\u0026", "&")
+        return "https://www.youtube.com" + canonical
+
+
+def extract_upcoming_start_utc_from_html(html: str) -> datetime | None:
+    if not html:
+        return None
+
+    epoch_match = re.search(r'"scheduledStartTime":"(\d{10,})"', html)
+    if not epoch_match:
+        epoch_match = re.search(r'"startTimestamp":"(\d{10,})"', html)
+    if epoch_match:
+        try:
+            return datetime.fromtimestamp(int(epoch_match.group(1)), tz=timezone.utc)
+        except Exception:
+            pass
+
+    iso_match = re.search(r'"startTimestamp":"(\d{4}-\d{2}-\d{2}T[^"]+)"', html)
+    if iso_match:
+        return parse_datetime_utc(iso_match.group(1))
+
+    return None
+
+
+def discover_youtube_live_state(watch_url: str) -> Dict[str, Any]:
+    base = normalize_youtube_watch_url(watch_url)
+    if not base:
+        return {"live_url": None, "scheduled_start": None}
+
+    parsed = urlparse(base)
+    host = (parsed.netloc or "").lower()
+    if "youtube.com" not in host and "youtu.be" not in host:
+        return {"live_url": None, "scheduled_start": None}
+
+    probe_urls: List[str] = [base]
+    base_no_slash = base.rstrip("/")
+    if "youtube.com" in host and "/watch" not in (parsed.path or "") and not base_no_slash.endswith("/live"):
+        probe_urls.append(base_no_slash + "/live")
+
+    scheduled_start: datetime | None = None
+    seen: set[str] = set()
+    for candidate in probe_urls:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            html = fetch_html(candidate)
+            if scheduled_start is None:
+                scheduled_start = extract_upcoming_start_utc_from_html(html)
+            live_url = extract_live_watch_url_from_html(html)
+            if live_url:
+                return {"live_url": live_url, "scheduled_start": scheduled_start}
+        except Exception:
+            continue
+    return {"live_url": None, "scheduled_start": scheduled_start}
+
+
+def discover_youtube_live_url(watch_url: str) -> str | None:
+    state = discover_youtube_live_state(watch_url)
+    return state.get("live_url")
+
+
+def upsert_injected_live_item(channel_id: int, live_url: str) -> int:
+    conn = db()
+    try:
+        playlist_id = ensure_default_playlist(int(channel_id), conn)
+        existing = conn.execute(
+            """
+            SELECT id, url
+            FROM playlist_items
+            WHERE playlist_id=? AND is_live=1 AND is_injected=1
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (playlist_id,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE playlist_items
+                SET url=?, type='video', duration=0, position=0, auto_remove_on_end=1
+                WHERE id=?
+                """,
+                (live_url.strip(), existing["id"]),
+            )
+            conn.commit()
+            return int(existing["id"])
+
+        conn.execute(
+            """
+            INSERT INTO playlist_items(playlist_id, position, type, url, duration, is_live, auto_remove_on_end, is_injected)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (playlist_id, 0, "video", live_url.strip(), 0, 1, 1, 1),
+        )
+        row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+        conn.commit()
+        return int(row["id"])
+    finally:
+        conn.close()
+
+
+def remove_injected_live_items(channel_id: int) -> int:
+    conn = db()
+    try:
+        cursor = conn.execute(
+            """
+            DELETE FROM playlist_items
+            WHERE id IN (
+                SELECT pi.id
+                FROM playlist_items pi
+                JOIN playlists p ON p.id = pi.playlist_id
+                WHERE p.channel_id=?
+                  AND pi.is_live=1
+                  AND pi.is_injected=1
+                  AND pi.auto_remove_on_end=1
+            )
+            """,
+            (channel_id,),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def process_youtube_watch_channels_once() -> None:
+    channels = fetch_all(
+        """
+        SELECT id, live_watch_enabled, live_watch_url, live_watch_interval_seconds,
+               live_watch_last_seen_at, live_watch_last_url
+        FROM channels
+        WHERE is_active=1
+          AND COALESCE(live_watch_enabled,0)=1
+          AND TRIM(COALESCE(live_watch_url,'')) <> ''
+        ORDER BY id
+        """
+    )
+    if not channels:
+        return
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    active_channel_ids: set[int] = set()
+    for row in channels:
+        channel_id = int(row["id"])
+        active_channel_ids.add(channel_id)
+        interval_s = int(row["live_watch_interval_seconds"] or YT_WATCH_DEFAULT_INTERVAL_SECONDS)
+        interval_s = max(15, interval_s)
+        scheduled_dt = _yt_watch_schedule_cache.get(channel_id)
+        if scheduled_dt:
+            delta_s = (scheduled_dt - now).total_seconds()
+            if (-YT_WATCH_POST_SCHEDULE_FAST_SECONDS) <= delta_s <= YT_WATCH_SCHEDULE_LOOKAHEAD_SECONDS:
+                interval_s = min(interval_s, YT_WATCH_SCHEDULE_POLL_SECONDS)
+
+        last_seen_dt = parse_datetime_utc(row["live_watch_last_seen_at"])
+        if last_seen_dt:
+            elapsed = (now - last_seen_dt).total_seconds()
+            if elapsed < interval_s:
+                continue
+
+        state = discover_youtube_live_state(row["live_watch_url"])
+        live_url = state.get("live_url")
+        scheduled_start = state.get("scheduled_start")
+        if isinstance(scheduled_start, datetime):
+            _yt_watch_schedule_cache[channel_id] = scheduled_start
+            if scheduled_start > now:
+                live_url = None
+        else:
+            _yt_watch_schedule_cache.pop(channel_id, None)
+
+        if live_url:
+            upsert_injected_live_item(channel_id, live_url)
+            execute(
+                """
+                UPDATE channels
+                SET live_watch_last_seen_at=?, live_watch_last_url=?
+                WHERE id=?
+                """,
+                (now_iso, live_url, row["id"]),
+            )
+        else:
+            remove_injected_live_items(channel_id)
+            execute(
+                """
+                UPDATE channels
+                SET live_watch_last_seen_at=?
+                WHERE id=?
+                """,
+                (now_iso, row["id"]),
+            )
+
+    for cached_channel_id in list(_yt_watch_schedule_cache.keys()):
+        if cached_channel_id not in active_channel_ids:
+            _yt_watch_schedule_cache.pop(cached_channel_id, None)
+
+
+def youtube_watch_monitor_loop() -> None:
+    while not _yt_watch_stop_event.is_set():
+        try:
+            process_youtube_watch_channels_once()
+        except Exception as exc:
+            print(f"[yt-watch] loop error: {exc}")
+        _yt_watch_stop_event.wait(YT_WATCH_POLL_SECONDS)
+
+
 def db() -> sqlite3.Connection:
     # timeout avoids immediate 'database is locked' on concurrent access
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -784,6 +1162,11 @@ def init_db() -> None:
                 icon_url TEXT DEFAULT '',
                 kind TEXT NOT NULL DEFAULT 'auto',
                 schedule_start TEXT,
+                live_watch_enabled INTEGER NOT NULL DEFAULT 0,
+                live_watch_url TEXT DEFAULT '',
+                live_watch_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                live_watch_last_seen_at TEXT,
+                live_watch_last_url TEXT DEFAULT '',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 sort_order INTEGER NOT NULL DEFAULT 100,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -834,6 +1217,11 @@ def init_db() -> None:
             icon_url TEXT DEFAULT '',
             kind TEXT NOT NULL DEFAULT 'auto',
             schedule_start TEXT,
+            live_watch_enabled INTEGER NOT NULL DEFAULT 0,
+            live_watch_url TEXT DEFAULT '',
+            live_watch_interval_seconds INTEGER NOT NULL DEFAULT 60,
+            live_watch_last_seen_at TEXT,
+            live_watch_last_url TEXT DEFAULT '',
             is_active INTEGER NOT NULL DEFAULT 1,
             sort_order INTEGER NOT NULL DEFAULT 100,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -853,6 +1241,18 @@ def init_db() -> None:
         cur.execute("ALTER TABLE channels ADD COLUMN schedule_start TEXT")
     if "icon_url" not in cols:
         cur.execute("ALTER TABLE channels ADD COLUMN icon_url TEXT DEFAULT ''")
+    if "live_watch_enabled" not in cols:
+        cur.execute("ALTER TABLE channels ADD COLUMN live_watch_enabled INTEGER NOT NULL DEFAULT 0")
+    if "live_watch_url" not in cols:
+        cur.execute("ALTER TABLE channels ADD COLUMN live_watch_url TEXT DEFAULT ''")
+    if "live_watch_interval_seconds" not in cols:
+        cur.execute(
+            "ALTER TABLE channels ADD COLUMN live_watch_interval_seconds INTEGER NOT NULL DEFAULT 60"
+        )
+    if "live_watch_last_seen_at" not in cols:
+        cur.execute("ALTER TABLE channels ADD COLUMN live_watch_last_seen_at TEXT")
+    if "live_watch_last_url" not in cols:
+        cur.execute("ALTER TABLE channels ADD COLUMN live_watch_last_url TEXT DEFAULT ''")
 
     # -------------------------
     # Legacy Channel Items (backward compatibility)
@@ -901,6 +1301,9 @@ def init_db() -> None:
         type TEXT NOT NULL,
         url TEXT,
         duration INTEGER NOT NULL,
+        is_live INTEGER NOT NULL DEFAULT 0,
+        auto_remove_on_end INTEGER NOT NULL DEFAULT 1,
+        is_injected INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
     )
     """)
@@ -908,6 +1311,13 @@ def init_db() -> None:
     CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist_pos
     ON playlist_items(playlist_id, position)
     """)
+    playlist_item_cols = [r["name"] for r in cur.execute("PRAGMA table_info(playlist_items)").fetchall()]
+    if "is_live" not in playlist_item_cols:
+        cur.execute("ALTER TABLE playlist_items ADD COLUMN is_live INTEGER NOT NULL DEFAULT 0")
+    if "auto_remove_on_end" not in playlist_item_cols:
+        cur.execute("ALTER TABLE playlist_items ADD COLUMN auto_remove_on_end INTEGER NOT NULL DEFAULT 1")
+    if "is_injected" not in playlist_item_cols:
+        cur.execute("ALTER TABLE playlist_items ADD COLUMN is_injected INTEGER NOT NULL DEFAULT 0")
 
     # -------------------------
     # Banner ads por canal
@@ -919,6 +1329,9 @@ def init_db() -> None:
         message TEXT NOT NULL,
         duration INTEGER NOT NULL DEFAULT 5,
         target_url TEXT NOT NULL DEFAULT '',
+        image_url TEXT NOT NULL DEFAULT '',
+        start_time TEXT NOT NULL DEFAULT '00:00',
+        repeat_count_per_day INTEGER NOT NULL DEFAULT 1,
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
@@ -928,6 +1341,13 @@ def init_db() -> None:
     CREATE INDEX IF NOT EXISTS idx_channel_banner_ads_channel
     ON channel_banner_ads(channel_id, is_active, created_at)
     """)
+    banner_ad_cols = [r["name"] for r in cur.execute("PRAGMA table_info(channel_banner_ads)").fetchall()]
+    if "image_url" not in banner_ad_cols:
+        cur.execute("ALTER TABLE channel_banner_ads ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+    if "start_time" not in banner_ad_cols:
+        cur.execute("ALTER TABLE channel_banner_ads ADD COLUMN start_time TEXT NOT NULL DEFAULT '00:00'")
+    if "repeat_count_per_day" not in banner_ad_cols:
+        cur.execute("ALTER TABLE channel_banner_ads ADD COLUMN repeat_count_per_day INTEGER NOT NULL DEFAULT 1")
 
     # -------------------------
     # Edge linear programming (advanced)
@@ -1026,10 +1446,21 @@ def _startup():
         )
         _edge_health_thread.start()
 
+    global _yt_watch_thread
+    if YT_WATCH_ENABLED and (_yt_watch_thread is None or not _yt_watch_thread.is_alive()):
+        _yt_watch_stop_event.clear()
+        _yt_watch_thread = threading.Thread(
+            target=youtube_watch_monitor_loop,
+            name="youtube-live-watch",
+            daemon=True,
+        )
+        _yt_watch_thread.start()
+
 
 @app.on_event("shutdown")
 def _shutdown():
     _edge_health_stop_event.set()
+    _yt_watch_stop_event.set()
 
 
 def fetch_all(sql: str, args=()) -> List[sqlite3.Row]:
@@ -1087,6 +1518,61 @@ def ensure_default_playlist(channel_id: int, conn: sqlite3.Connection) -> int:
     return int(row["id"])
 
 
+def resolve_playlist_item_fields(
+    item_type: str,
+    url: str | None,
+    duration: str | None,
+    is_live_raw: Any = 0,
+) -> tuple[str, str | None, int, int]:
+    item_type_clean = (item_type or "").strip().lower()
+    if item_type_clean not in ("video", "ad"):
+        raise HTTPException(status_code=400, detail="type must be video or ad")
+
+    url_clean = (url or "").strip()
+    if item_type_clean == "video" and not url_clean:
+        raise HTTPException(status_code=400, detail="video items require url")
+    is_live = parse_checkbox_flag(is_live_raw, default=0)
+    if is_live and item_type_clean != "video":
+        raise HTTPException(status_code=400, detail="live items must be type=video")
+
+    dur_raw = (duration or "").strip()
+
+    def _parse_duration(raw: str) -> Optional[int]:
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="duration must be a valid integer")
+        if value == 0:
+            return None
+        if value < 0:
+            raise HTTPException(status_code=400, detail="duration must be > 0")
+        return value
+
+    manual_duration = _parse_duration(dur_raw)
+
+    if item_type_clean == "ad":
+        duration_i = manual_duration if manual_duration is not None else 30
+        url_db = None
+    else:
+        url_db = url_clean
+        if is_live:
+            duration_i = 0
+        elif manual_duration is not None:
+            duration_i = manual_duration
+        elif is_youtube_url(url_clean):
+            try:
+                d = youtube_duration_seconds(url_clean)
+                duration_i = d if d and d > 0 else 600
+            except Exception:
+                duration_i = 600
+        else:
+            duration_i = 600
+
+    return item_type_clean, url_db, int(duration_i), int(is_live)
+
+
 def resolve_edge_programming(edge_id: str, channel_id: int) -> Dict[str, Any]:
     row = fetch_one(
         """
@@ -1125,7 +1611,11 @@ def resolve_edge_programming(edge_id: str, channel_id: int) -> Dict[str, Any]:
     return {"playlist_id": None, "playlist_name": None, "schedule_start": None}
 
 
-def fetch_channel_banner_ads_map(channel_ids: List[int], active_only: bool = True) -> Dict[int, List[Dict[str, Any]]]:
+def fetch_channel_banner_ads_map(
+    channel_ids: List[int],
+    active_only: bool = True,
+    public_base: str | None = None,
+) -> Dict[int, List[Dict[str, Any]]]:
     seen: set[int] = set()
     normalized_ids: List[int] = []
     for raw_id in channel_ids:
@@ -1143,7 +1633,7 @@ def fetch_channel_banner_ads_map(channel_ids: List[int], active_only: bool = Tru
 
     placeholders = ",".join(["?"] * len(normalized_ids))
     sql = f"""
-        SELECT id, channel_id, message, duration, target_url, is_active, created_at
+        SELECT id, channel_id, message, duration, target_url, image_url, start_time, repeat_count_per_day, is_active, created_at
         FROM channel_banner_ads
         WHERE channel_id IN ({placeholders})
     """
@@ -1154,10 +1644,18 @@ def fetch_channel_banner_ads_map(channel_ids: List[int], active_only: bool = Tru
     rows = fetch_all(sql, tuple(normalized_ids))
     result: Dict[int, List[Dict[str, Any]]] = {channel_id: [] for channel_id in normalized_ids}
     for row in rows:
+        interval_minutes = compute_banner_interval_minutes(int(row["repeat_count_per_day"] or 1))
+        image_url = str(row["image_url"] or "").strip()
+        if public_base:
+            image_url = resolve_banner_ad_image_public_url(image_url, public_base)
         result.setdefault(row["channel_id"], []).append({
             "id": row["id"],
             "message": row["message"],
             "duration": row["duration"],
+            "image_url": image_url,
+            "start_time": row["start_time"],
+            "repeat_count_per_day": row["repeat_count_per_day"],
+            "interval_minutes": interval_minutes,
             "url": row["target_url"],
             "target_url": row["target_url"],
             "created_at": row["created_at"],
@@ -1210,7 +1708,10 @@ def enrich_channel_for_edge(
 
         if playlist_id:
             rows = fetch_all(
-                """SELECT position, type, url, duration
+                """SELECT position, type, url, duration,
+                          COALESCE(is_live,0) AS is_live,
+                          COALESCE(auto_remove_on_end,1) AS auto_remove_on_end,
+                          COALESCE(is_injected,0) AS is_injected
                    FROM playlist_items
                    WHERE playlist_id=?
                    ORDER BY position""",
@@ -1220,16 +1721,33 @@ def enrich_channel_for_edge(
             rows = []
 
         normalized_items = []
+        live_override_payload: Dict[str, Any] | None = None
         for row in rows:
+            row_is_live = int(row["is_live"] or 0)
+            row_duration = int(row["duration"] or 0)
+            if row_is_live:
+                row_duration = 0
             payload_item = {
                 "type": row["type"],
-                "duration": row["duration"],
+                "duration": row_duration,
+                "is_live": row_is_live,
+                "auto_remove_on_end": int(row["auto_remove_on_end"] or 0),
+                "is_injected": int(row["is_injected"] or 0),
             }
             if row["type"] == "video" and row["url"]:
                 payload_item["url"] = row["url"]
+                if row_is_live and not live_override_payload:
+                    live_override_payload = {
+                        "type": "video",
+                        "url": row["url"],
+                        "duration": 0,
+                        "offset": 0,
+                        "is_live": 1,
+                    }
             normalized_items.append(payload_item)
         item["items"] = normalized_items
-        item["now"] = compute_linear_now(schedule_start, normalized_items)
+        item["now"] = live_override_payload or compute_linear_now(schedule_start, normalized_items)
+        item["live_override"] = 1 if live_override_payload else 0
 
     return item
 
@@ -1374,7 +1892,9 @@ def home(request: Request):
     channel_categories = [r["category"] for r in category_rows]
 
     channel_sql = """
-        SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start, c.is_active, c.sort_order, c.created_at,
+        SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start,
+               c.live_watch_enabled, c.live_watch_url, c.live_watch_interval_seconds, c.live_watch_last_seen_at, c.live_watch_last_url,
+               c.is_active, c.sort_order, c.created_at,
                p.name AS provider_name,
                (
                    SELECT COUNT(*)
@@ -1484,13 +2004,16 @@ def home(request: Request):
         (channel_grade_id,) if channel_grade_id else (),
     )
     banner_ads = fetch_all(
-        """SELECT ba.id, ba.channel_id, ba.message, ba.duration, ba.target_url, ba.is_active, ba.created_at,
+        """SELECT ba.id, ba.channel_id, ba.message, ba.duration, ba.target_url, ba.image_url, ba.start_time, ba.repeat_count_per_day, ba.is_active, ba.created_at,
                   c.channel_number, c.name AS channel_name, c.provider_id, p.name AS provider_name
            FROM channel_banner_ads ba
            JOIN channels c ON c.id = ba.channel_id
            JOIN providers p ON p.provider_id = c.provider_id
            ORDER BY ba.created_at DESC, ba.id DESC"""
     )
+    banner_ads = [dict(row) for row in banner_ads]
+    for item in banner_ads:
+        item["repeat_interval_label"] = format_banner_interval_label(int(item.get("repeat_count_per_day") or 1))
 
     return templates.TemplateResponse("home.html", {
         "request": request,
@@ -1582,36 +2105,55 @@ def remove_channel_from_grade(grade_id: int = Form(...), channel_id: int = Form(
 @app.post("/admin/channel-banner-ads/create")
 def create_channel_banner_ad(
     channel_id: int = Form(...),
-    message: str = Form(...),
+    message: str = Form(""),
     duration: int = Form(...),
-    target_url: str = Form(...),
+    start_time: str = Form(...),
+    repeat_count_per_day: int = Form(...),
+    image_file: Optional[UploadFile] = File(None),
 ):
     channel = fetch_one("SELECT id FROM channels WHERE id=?", (channel_id,))
     if not channel:
         raise HTTPException(status_code=404, detail="channel not found")
 
     message_clean = (message or "").strip()
-    target_url_clean = (target_url or "").strip()
-    if not message_clean:
-        raise HTTPException(status_code=400, detail="message is required")
+    start_time_clean = normalize_banner_start_time(start_time)
     if duration <= 0:
         raise HTTPException(status_code=400, detail="duration must be > 0")
-    if not target_url_clean:
-        raise HTTPException(status_code=400, detail="target_url is required")
+    try:
+        repeat_count_i = int(repeat_count_per_day)
+    except Exception:
+        raise HTTPException(status_code=400, detail="repeat_count_per_day must be numeric")
+    if repeat_count_i <= 0:
+        raise HTTPException(status_code=400, detail="repeat_count_per_day must be > 0")
 
-    execute(
-        """
-        INSERT INTO channel_banner_ads(channel_id, message, duration, target_url, is_active)
-        VALUES (?,?,?,?,1)
-        """,
-        (channel_id, message_clean, int(duration), target_url_clean),
-    )
+    saved_image_url = ""
+    try:
+        if image_file and (image_file.filename or "").strip():
+            saved_image_url = save_banner_ad_image_upload(image_file)
+        if not message_clean and not saved_image_url:
+            raise HTTPException(status_code=400, detail="banner requires message or image")
+
+        execute(
+            """
+            INSERT INTO channel_banner_ads(
+                channel_id, message, duration, target_url, image_url, start_time, repeat_count_per_day, is_active
+            )
+            VALUES (?,?,?,?,?,?,?,1)
+            """,
+            (channel_id, message_clean, int(duration), "", saved_image_url, start_time_clean, repeat_count_i),
+        )
+    except Exception:
+        delete_banner_ad_image_file(saved_image_url)
+        raise
     return RedirectResponse("/#ads-manager", status_code=303)
 
 
 @app.post("/admin/channel-banner-ads/delete")
 def delete_channel_banner_ad(id: int = Form(...)):
+    row = fetch_one("SELECT image_url FROM channel_banner_ads WHERE id=?", (id,))
     execute("DELETE FROM channel_banner_ads WHERE id=?", (id,))
+    if row:
+        delete_banner_ad_image_file(row["image_url"])
     return RedirectResponse("/#ads-manager", status_code=303)
 
 
@@ -1625,6 +2167,9 @@ def create_channel(
     icon_file: Optional[UploadFile] = File(None),
     kind: str = Form("auto"),
     schedule_start: str = Form(""),
+    live_watch_enabled: Optional[str] = Form(None),
+    live_watch_url: str = Form(""),
+    live_watch_interval_seconds: str = Form("60"),
     sort_order: int = Form(100),
     is_active: int = Form(1),
 ):
@@ -1641,11 +2186,21 @@ def create_channel(
         if kind_clean not in ("auto", "hls", "youtube", "youtube_linear"):
             kind_clean = "auto"
         schedule_clean = schedule_start.strip() or None
+        live_watch_enabled_i = parse_checkbox_flag(live_watch_enabled, default=0)
+        live_watch_url_clean = normalize_youtube_watch_url(live_watch_url)
+        try:
+            live_watch_interval_i = int((live_watch_interval_seconds or "").strip() or "60")
+        except Exception:
+            raise HTTPException(status_code=400, detail="live_watch_interval_seconds must be numeric")
+        live_watch_interval_i = max(15, live_watch_interval_i)
         if icon_file and (icon_file.filename or "").strip():
             saved_icon_url = save_channel_icon_upload(icon_file)
         conn.execute(
-            """INSERT INTO channels(channel_number,name,category,provider_id,source_url,icon_url,kind,schedule_start,sort_order,is_active)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO channels(
+                   channel_number,name,category,provider_id,source_url,icon_url,kind,schedule_start,
+                   live_watch_enabled,live_watch_url,live_watch_interval_seconds,sort_order,is_active
+               )
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 channel_number.strip(),
                 name.strip(),
@@ -1655,6 +2210,9 @@ def create_channel(
                 saved_icon_url,
                 kind_clean,
                 schedule_clean,
+                live_watch_enabled_i,
+                live_watch_url_clean,
+                live_watch_interval_i,
                 sort_order_i,
                 is_active_i,
             ),
@@ -1766,7 +2324,10 @@ def channel_detail(channel_id: int, request: Request):
         (channel_id,),
     )
     playlist_items = fetch_all(
-        """SELECT pi.id, pi.playlist_id, p.name AS playlist_name, pi.position, pi.type, pi.url, pi.duration
+        """SELECT pi.id, pi.playlist_id, p.name AS playlist_name, pi.position, pi.type, pi.url, pi.duration,
+                  COALESCE(pi.is_live,0) AS is_live,
+                  COALESCE(pi.auto_remove_on_end,1) AS auto_remove_on_end,
+                  COALESCE(pi.is_injected,0) AS is_injected
            FROM playlist_items pi
            JOIN playlists p ON p.id = pi.playlist_id
            WHERE p.channel_id=?
@@ -1784,6 +2345,37 @@ def channel_detail(channel_id: int, request: Request):
     )
 
 
+@app.post("/admin/channels/live-watch/update")
+def update_channel_live_watch(
+    channel_id: int = Form(...),
+    live_watch_enabled: Optional[str] = Form(None),
+    live_watch_url: str = Form(""),
+    live_watch_interval_seconds: str = Form("60"),
+    return_channel_id: Optional[int] = Form(None),
+):
+    channel = fetch_one("SELECT id FROM channels WHERE id=?", (channel_id,))
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found")
+
+    enabled_i = parse_checkbox_flag(live_watch_enabled, default=0)
+    watch_url = normalize_youtube_watch_url(live_watch_url)
+    try:
+        interval_i = int((live_watch_interval_seconds or "").strip() or "60")
+    except Exception:
+        raise HTTPException(status_code=400, detail="live_watch_interval_seconds must be numeric")
+    interval_i = max(15, interval_i)
+
+    execute(
+        """
+        UPDATE channels
+        SET live_watch_enabled=?, live_watch_url=?, live_watch_interval_seconds=?
+        WHERE id=?
+        """,
+        (enabled_i, watch_url, interval_i, channel_id),
+    )
+    return redirect_home_or_channel(return_channel_id or channel_id)
+
+
 @app.post("/admin/channel-items/create")
 def create_channel_item(
     channel_id: Optional[int] = Form(None),
@@ -1793,6 +2385,8 @@ def create_channel_item(
     item_type: str = Form(..., alias="type"),
     url: str = Form(None),
     duration: str = Form(""),
+    is_live: Optional[str] = Form(None),
+    auto_remove_on_end: Optional[str] = Form(None),
 ):
     # Keep automatic behavior as default, but accept explicit duration from ingest.
     try:
@@ -1803,47 +2397,15 @@ def create_channel_item(
     if position_i < 1:
         raise HTTPException(status_code=400, detail="position must be >= 1")
 
-    item_type_clean = (item_type or "").strip().lower()
-    if item_type_clean not in ("video", "ad"):
-        raise HTTPException(status_code=400, detail="type must be video or ad")
-
-    url_clean = (url or "").strip()
-    if item_type_clean == "video" and not url_clean:
-        raise HTTPException(status_code=400, detail="video items require url")
-
-    dur_raw = (duration or "").strip()
-
-    def _parse_duration(raw: str) -> Optional[int]:
-        if not raw:
-            return None
-        try:
-            value = int(raw)
-        except Exception:
-            raise HTTPException(status_code=400, detail="duration must be a valid integer")
-        if value <= 0:
-            raise HTTPException(status_code=400, detail="duration must be > 0")
-        return value
-
-    manual_duration = _parse_duration(dur_raw)
-
-    # Duration strategy:
-    # 1) Manual duration wins when informed (ingest/bulk operations).
-    # 2) Otherwise preserve existing auto-lookup + fallback behavior.
-    if item_type_clean == "ad":
-        duration_i = manual_duration if manual_duration is not None else 30
-        url_db = None
-    else:
-        url_db = url_clean
-        if manual_duration is not None:
-            duration_i = manual_duration
-        elif is_youtube_url(url_clean):
-            try:
-                d = youtube_duration_seconds(url_clean)
-                duration_i = d if d and d > 0 else 600
-            except Exception:
-                duration_i = 600
-        else:
-            duration_i = 600
+    item_type_clean, url_db, duration_i, is_live_i = resolve_playlist_item_fields(
+        item_type,
+        url,
+        duration,
+        is_live_raw=is_live,
+    )
+    auto_remove_i = parse_checkbox_flag(auto_remove_on_end, default=0)
+    if not is_live_i:
+        auto_remove_i = 0
 
     conn = db()
     try:
@@ -1854,14 +2416,84 @@ def create_channel_item(
             target_playlist_id = ensure_default_playlist(int(channel_id), conn)
 
         conn.execute(
-            "INSERT INTO playlist_items(playlist_id, position, type, url, duration) VALUES (?,?,?,?,?)",
-            (int(target_playlist_id), position_i, item_type_clean, url_db, int(duration_i)),
+            """
+            INSERT INTO playlist_items(playlist_id, position, type, url, duration, is_live, auto_remove_on_end, is_injected)
+            VALUES (?,?,?,?,?,?,?,0)
+            """,
+            (
+                int(target_playlist_id),
+                position_i,
+                item_type_clean,
+                url_db,
+                int(duration_i),
+                is_live_i,
+                auto_remove_i,
+            ),
         )
         conn.commit()
     finally:
         conn.close()
 
     return redirect_home_or_channel(return_channel_id)
+
+
+@app.post("/admin/channel-items/update")
+def update_channel_item(
+    id: int = Form(...),
+    playlist_id: int = Form(...),
+    position: int = Form(...),
+    item_type: str = Form(..., alias="type"),
+    url: str = Form(None),
+    duration: str = Form(""),
+    is_live: Optional[str] = Form(None),
+    auto_remove_on_end: Optional[str] = Form(None),
+    return_channel_id: Optional[int] = Form(None),
+):
+    try:
+        position_i = int(position)
+    except Exception:
+        raise HTTPException(status_code=400, detail="position must be numeric")
+
+    if position_i < 1:
+        raise HTTPException(status_code=400, detail="position must be >= 1")
+
+    item = fetch_one(
+        """
+        SELECT pi.id, p.channel_id
+        FROM playlist_items pi
+        JOIN playlists p ON p.id = pi.playlist_id
+        WHERE pi.id=?
+        """,
+        (id,),
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="playlist item not found")
+
+    playlist = fetch_one("SELECT id, channel_id FROM playlists WHERE id=?", (playlist_id,))
+    if not playlist:
+        raise HTTPException(status_code=404, detail="playlist not found")
+    if int(playlist["channel_id"]) != int(item["channel_id"]):
+        raise HTTPException(status_code=400, detail="playlist must belong to the same channel")
+
+    item_type_clean, url_db, duration_i, is_live_i = resolve_playlist_item_fields(
+        item_type,
+        url,
+        duration,
+        is_live_raw=is_live,
+    )
+    auto_remove_i = parse_checkbox_flag(auto_remove_on_end, default=0)
+    if not is_live_i:
+        auto_remove_i = 0
+
+    execute(
+        """
+        UPDATE playlist_items
+        SET playlist_id=?, position=?, type=?, url=?, duration=?, is_live=?, auto_remove_on_end=?, is_injected=0
+        WHERE id=?
+        """,
+        (playlist_id, position_i, item_type_clean, url_db, duration_i, is_live_i, auto_remove_i, id),
+    )
+    return redirect_home_or_channel(return_channel_id or int(item["channel_id"]))
 
 
 @app.post("/admin/channel-items/delete")
@@ -2086,6 +2718,136 @@ def edge_providers_save(edge_id: str, provider_ids: Optional[List[str]] = Form(N
     return RedirectResponse(f"/admin/edges/{edge_id}/providers", status_code=303)
 
 
+def find_channel_for_live_event(payload: Dict[str, Any]) -> sqlite3.Row | None:
+    channel_pk_raw = payload.get("channel_pk")
+    if channel_pk_raw is not None:
+        try:
+            channel_pk = int(channel_pk_raw)
+            row = fetch_one("SELECT * FROM channels WHERE id=?", (channel_pk,))
+            if row:
+                return row
+        except Exception:
+            pass
+
+    provider_id = str(payload.get("provider_id") or "").strip()
+    channel_number = str(payload.get("channel_number") or payload.get("channel_id") or "").strip()
+    if provider_id and channel_number:
+        return fetch_one(
+            "SELECT * FROM channels WHERE provider_id=? AND channel_number=?",
+            (provider_id, channel_number),
+        )
+    return None
+
+
+def consume_live_end_event(channel_id: int, payload: Dict[str, Any]) -> int:
+    item_id_raw = payload.get("playlist_item_id") or payload.get("item_id")
+    live_url = str(payload.get("url") or payload.get("playback_url") or "").strip()
+    conn = db()
+    try:
+        if item_id_raw is not None:
+            try:
+                item_id = int(item_id_raw)
+            except Exception:
+                item_id = 0
+            if item_id > 0:
+                cur = conn.execute(
+                    """
+                    DELETE FROM playlist_items
+                    WHERE id IN (
+                        SELECT pi.id
+                        FROM playlist_items pi
+                        JOIN playlists p ON p.id = pi.playlist_id
+                        WHERE pi.id=?
+                          AND p.channel_id=?
+                          AND COALESCE(pi.is_live,0)=1
+                          AND COALESCE(pi.auto_remove_on_end,1)=1
+                    )
+                    """,
+                    (item_id, channel_id),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)
+
+        if live_url:
+            cur = conn.execute(
+                """
+                DELETE FROM playlist_items
+                WHERE id IN (
+                    SELECT pi.id
+                    FROM playlist_items pi
+                    JOIN playlists p ON p.id=pi.playlist_id
+                    WHERE p.channel_id=?
+                      AND COALESCE(pi.is_live,0)=1
+                      AND COALESCE(pi.auto_remove_on_end,1)=1
+                      AND COALESCE(pi.url,'')=?
+                )
+                """,
+                (channel_id, live_url),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+        cur = conn.execute(
+            """
+            DELETE FROM playlist_items
+            WHERE id IN (
+                SELECT pi.id
+                FROM playlist_items pi
+                JOIN playlists p ON p.id=pi.playlist_id
+                WHERE p.channel_id=?
+                  AND COALESCE(pi.is_live,0)=1
+                  AND COALESCE(pi.is_injected,0)=1
+                  AND COALESCE(pi.auto_remove_on_end,1)=1
+            )
+            """,
+            (channel_id,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+@app.post("/api/edge/live-events")
+async def api_edge_live_events(request: Request):
+    edge = must_auth_edge(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body must be JSON object")
+
+    event = str(payload.get("event") or payload.get("status") or "").strip().lower()
+    channel = find_channel_for_live_event(payload)
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found for live event")
+
+    start_events = {"stream_started", "live_started", "input_started", "started"}
+    end_events = {"stream_ended", "live_ended", "input_failed", "source_failed", "offline", "ended"}
+
+    removed = 0
+    created_item_id: Optional[int] = None
+    live_url = str(payload.get("url") or payload.get("playback_url") or "").strip()
+    if event in start_events and live_url:
+        created_item_id = upsert_injected_live_item(int(channel["id"]), live_url)
+    elif event in end_events:
+        removed = consume_live_end_event(int(channel["id"]), payload)
+        execute(
+            "UPDATE channels SET live_watch_last_url='' WHERE id=?",
+            (channel["id"],),
+        )
+
+    return {
+        "ok": True,
+        "edge_id": edge["edge_id"],
+        "event": event,
+        "channel_id": channel["id"],
+        "created_item_id": created_item_id,
+        "removed": removed,
+    }
+
+
 @app.get("/api/edge/channels")
 def api_edge_channels(request: Request):
     edge = must_auth_edge(request)
@@ -2096,7 +2858,9 @@ def api_edge_channels(request: Request):
     if edge["grade_id"]:
         rows = fetch_all(
             """
-            SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start, c.is_active, c.sort_order,
+            SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start,
+                   c.live_watch_enabled, c.live_watch_url, c.live_watch_interval_seconds, c.live_watch_last_seen_at, c.live_watch_last_url,
+                   c.is_active, c.sort_order,
                    gc.sort_order AS grade_sort_order
             FROM channel_grade_channels gc
             JOIN channels c ON c.id = gc.channel_id
@@ -2115,7 +2879,9 @@ def api_edge_channels(request: Request):
         # Automatic general grade fallback: all active channels.
         channel_rows = fetch_all(
             """
-            SELECT id, channel_number, name, category, provider_id, source_url, icon_url, kind, schedule_start, is_active, sort_order
+            SELECT id, channel_number, name, category, provider_id, source_url, icon_url, kind, schedule_start,
+                   live_watch_enabled, live_watch_url, live_watch_interval_seconds, live_watch_last_seen_at, live_watch_last_url,
+                   is_active, sort_order
             FROM channels
             WHERE is_active=1
             ORDER BY provider_id, sort_order, channel_number
@@ -2141,7 +2907,8 @@ def api_edge_channels(request: Request):
     result = []
     public_base = str(request.base_url).rstrip("/")
     banner_ads_by_channel = fetch_channel_banner_ads_map(
-        [int(row["id"]) for rows in channels_by_provider.values() for row in rows]
+        [int(row["id"]) for rows in channels_by_provider.values() for row in rows],
+        public_base=public_base,
     )
     for pid in provider_order:
         rows = channels_by_provider.get(pid, [])

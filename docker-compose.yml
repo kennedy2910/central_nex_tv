@@ -4,13 +4,14 @@ services:
     container_name: central-nex
     restart: unless-stopped
     environment:
-      - DATA_DIR=/data
-      - CENTRAL_TITLE=Central-Nex
-      - CENTRAL_ADMIN_USERNAME=admin
-      - CENTRAL_ADMIN_PASSWORD=troque-esta-senha
-      - CENTRAL_SESSION_SECRET=troque-este-segredo-de-sessao
-      - CENTRAL_SESSION_HTTPS_ONLY=0
-    volumes:
-      - ./data:/data
+      DATA_DIR: /data
+      CENTRAL_TITLE: Central-Nex
+      CENTRAL_ADMIN_USERNAME: admin
+      CENTRAL_ADMIN_PASSWORD: kS@29101981
+      CENTRAL_SESSION_SECRET: troque-este-segredo
+      CENTRAL_SESSION_HTTPS_ONLY: "0"
     ports:
       - "9000:9000"
+    volumes:
+      - ./data:/data
+      - ./data/channel-icons:/app/app/static/channel-icons

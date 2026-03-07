@@ -319,6 +319,12 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
               <label>Ordem<input name="sort_order" type="number" value="100"></label>
               <label class="span-2">Schedule Start (UTC)<input name="schedule_start" placeholder="2026-01-31T00:00:00Z"></label>
               <label class="span-2">Source URL<input name="source_url" placeholder="https://..."></label>
+              <label class="span-2">
+                <input type="checkbox" name="live_watch_enabled" value="1">
+                Ativar watcher de live YouTube para este canal
+              </label>
+              <label class="span-2">URL canal YouTube (watcher)<input name="live_watch_url" placeholder="https://www.youtube.com/@canal"></label>
+              <label>Intervalo watcher (s)<input name="live_watch_interval_seconds" type="number" min="15" value="60"></label>
               <input type="hidden" name="is_active" value="1">
               <button class="nex-btn nex-btn-indigo" type="submit">Criar Canal</button>
             </form>
@@ -326,7 +332,7 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
 
           <details class="ops-card" id="ads-manager" open>
             <summary>ADS Banner</summary>
-            <form class="ops-form-grid" method="post" action="/admin/channel-banner-ads/create">
+            <form class="ops-form-grid" method="post" action="/admin/channel-banner-ads/create" enctype="multipart/form-data">
               <label>Canal
                 <select name="channel_id" required>
                   {% for c in channels_all %}
@@ -335,19 +341,29 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
                 </select>
               </label>
               <label>Duracao (s)<input name="duration" type="number" min="1" value="5" required></label>
-              <label class="span-2">Mensagem<input name="message" placeholder="ADS TESTE NO CANAL Spacetoday" required></label>
-              <label class="span-2">URL Banner<input name="target_url" placeholder="https://..." required></label>
+              <label>Hora inicial<input name="start_time" type="time" value="00:00" required></label>
+              <label>Repeticoes/dia<input name="repeat_count_per_day" type="number" min="1" value="8" required></label>
+              <label class="span-2">Mensagem (opcional)<input name="message" placeholder="ADS TESTE NO CANAL Spacetoday"></label>
+              <label class="span-2">Imagem do banner<input type="file" name="image_file" accept="image/png,image/jpeg,image/webp"></label>
+              <div class="field-hint span-2">Exemplo: 8 repeticoes por dia = banner a cada 3 horas.</div>
               <button class="nex-btn nex-btn-teal" type="submit">Cadastrar Banner</button>
             </form>
             <table class="nex-table compact-table ads-table">
-              <thead><tr><th>Canal</th><th>Mensagem</th><th>Duracao</th><th>URL</th><th></th></tr></thead>
+              <thead><tr><th>Canal</th><th>Mensagem</th><th>Duracao</th><th>Agenda</th><th>Imagem</th><th></th></tr></thead>
               <tbody>
               {% for ad in banner_ads %}
                 <tr>
                   <td>{{ ad.channel_number }} - {{ ad.channel_name }}<div class="channel-meta">{{ ad.provider_id }} - {{ ad.provider_name }}</div></td>
-                  <td class="ads-message-cell">{{ ad.message }}</td>
+                  <td class="ads-message-cell">{{ ad.message or 'Sem mensagem' }}</td>
                   <td class="mono">{{ ad.duration }}s</td>
-                  <td class="ads-url-cell mono">{{ ad.target_url }}</td>
+                  <td class="mono">{{ ad.start_time }}<div class="channel-meta">{{ ad.repeat_count_per_day }}x/dia, {{ ad.repeat_interval_label }}</div></td>
+                  <td class="ads-image-cell">
+                    {% if ad.image_url %}
+                      <img class="ads-image-preview" src="{{ ad.image_url }}" alt="Banner {{ ad.channel_name }}">
+                    {% else %}
+                      <span class="nex-empty">Sem imagem</span>
+                    {% endif %}
+                  </td>
                   <td>
                     <form method="post" action="/admin/channel-banner-ads/delete" onsubmit="return confirm('Excluir banner do canal {{ad.channel_number}} - {{ad.channel_name}}?');">
                       <input type="hidden" name="id" value="{{ad.id}}">
@@ -356,7 +372,7 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
                   </td>
                 </tr>
               {% else %}
-                <tr><td colspan="5" class="nex-empty">Nenhum banner ADS cadastrado.</td></tr>
+                <tr><td colspan="6" class="nex-empty">Nenhum banner ADS cadastrado.</td></tr>
               {% endfor %}
               </tbody>
             </table>

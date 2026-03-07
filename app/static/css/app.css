@@ -703,18 +703,38 @@ a {
   grid-column: span 2;
 }
 
+.ops-form-grid .field-hint {
+  color: #8ea6c7;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: -4px;
+}
+
 .compact-table thead th,
 .compact-table tbody td {
   padding: 10px 12px;
   font-size: 14px;
 }
 
-.ads-message-cell,
-.ads-url-cell {
+.ads-message-cell {
   max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ads-image-cell {
+  min-width: 156px;
+}
+
+.ads-image-preview {
+  display: block;
+  width: 132px;
+  height: 74px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.72);
 }
 
 .fab-wrap {

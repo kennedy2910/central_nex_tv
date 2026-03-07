@@ -104,6 +104,37 @@
     </div>
   </div>
 
+  <div class="card mb-4">
+    <div class="card-header"><b>Watcher de Live (YouTube)</b></div>
+    <div class="card-body">
+      <form class="row g-2" method="post" action="/admin/channels/live-watch/update">
+        <input type="hidden" name="channel_id" value="{{ channel.id }}">
+        <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
+        <div class="col-md-12">
+          <label class="form-check-label">
+            <input class="form-check-input me-2" type="checkbox" name="live_watch_enabled" value="1" {% if channel.live_watch_enabled %}checked{% endif %}>
+            Ativar monitoramento automatico de lives no YouTube
+          </label>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label mb-1">URL do canal/perfil YouTube</label>
+          <input class="form-control" name="live_watch_url" value="{{ channel.live_watch_url or '' }}" placeholder="https://www.youtube.com/@canal">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label mb-1">Intervalo (s)</label>
+          <input class="form-control" type="number" min="15" name="live_watch_interval_seconds" value="{{ channel.live_watch_interval_seconds or 60 }}">
+        </div>
+        <div class="col-md-2 d-flex align-items-end">
+          <button class="btn btn-primary btn-sm w-100">Salvar Watcher</button>
+        </div>
+      </form>
+      <div class="small-muted mt-2">
+        Ultima URL detectada: <code>{{ channel.live_watch_last_url or '-' }}</code> |
+        Ultima verificacao: <code>{{ channel.live_watch_last_seen_at or '-' }}</code>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-header"><b>Conteudo (URLs) do Canal</b></div>
     <div class="card-body">
@@ -133,24 +164,65 @@
           <label class="form-label mb-1">URL (somente para video)</label>
           <input class="form-control" name="url" placeholder="https://youtube.com/...">
         </div>
+        <div class="col-md-12 d-flex gap-4">
+          <label class="form-check-label">
+            <input class="form-check-input me-1" type="checkbox" name="is_live" value="1">
+            URL live (prioridade)
+          </label>
+          <label class="form-check-label">
+            <input class="form-check-input me-1" type="checkbox" name="auto_remove_on_end" value="1" checked>
+            Auto remover no fim da live
+          </label>
+        </div>
         <div class="col-12 d-flex gap-2 align-items-center">
           <button class="btn btn-primary btn-sm">Adicionar URL</button>
-          <span class="small-muted">Duracao e automatica (ad=30s, video via metadata/fallback).</span>
+          <span class="small-muted">Itens live usam duracao 0 e entram com prioridade.</span>
         </div>
       </form>
 
       <hr>
       <table class="table table-sm align-middle">
-        <thead><tr><th>Playlist</th><th>Pos</th><th>Tipo</th><th>Duracao</th><th>URL</th><th></th></tr></thead>
+        <thead><tr><th>Playlist</th><th>Pos</th><th>Tipo</th><th>Duracao</th><th>Live</th><th>Auto Remove</th><th>URL</th><th></th></tr></thead>
         <tbody>
           {% for it in playlist_items %}
             <tr>
-              <td><code>{{ it.playlist_name }}</code></td>
-              <td><code>{{ it.position }}</code></td>
-              <td><code>{{ it.type }}</code></td>
-              <td><code>{{ it.duration }}</code></td>
-              <td style="max-width: 420px; overflow:hidden; text-overflow: ellipsis; white-space: nowrap;"><code>{{ it.url or '' }}</code></td>
+              <td style="min-width: 220px;">
+                <select class="form-select form-select-sm" name="playlist_id" form="item-form-{{ it.id }}" required>
+                  {% for pl in playlists %}
+                    <option value="{{ pl.id }}" {% if pl.id == it.playlist_id %}selected{% endif %}>{{ pl.name }} (#{{ pl.id }})</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td style="width: 90px;">
+                <input class="form-control form-control-sm" name="position" type="number" min="1" value="{{ it.position }}" form="item-form-{{ it.id }}" required>
+              </td>
+              <td style="width: 120px;">
+                <select class="form-select form-select-sm" name="type" form="item-form-{{ it.id }}">
+                  <option value="video" {% if it.type == 'video' %}selected{% endif %}>video</option>
+                  <option value="ad" {% if it.type == 'ad' %}selected{% endif %}>ad</option>
+                </select>
+              </td>
+              <td style="width: 120px;">
+                <input class="form-control form-control-sm" name="duration" type="number" min="0" value="{{ it.duration }}" form="item-form-{{ it.id }}" required>
+              </td>
+              <td style="width: 96px;">
+                <input class="form-check-input" type="checkbox" name="is_live" value="1" form="item-form-{{ it.id }}" {% if it.is_live %}checked{% endif %}>
+              </td>
+              <td style="width: 140px;">
+                <input class="form-check-input" type="checkbox" name="auto_remove_on_end" value="1" form="item-form-{{ it.id }}" {% if it.auto_remove_on_end %}checked{% endif %}>
+              </td>
+              <td style="min-width: 320px;">
+                <input class="form-control form-control-sm" name="url" value="{{ it.url or '' }}" placeholder="https://youtube.com/..." form="item-form-{{ it.id }}">
+                {% if it.is_injected %}
+                  <div class="small-muted">injetado automaticamente</div>
+                {% endif %}
+              </td>
               <td class="text-end">
+                <form id="item-form-{{ it.id }}" method="post" action="/admin/channel-items/update" class="d-inline">
+                  <input type="hidden" name="id" value="{{ it.id }}">
+                  <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
+                  <button class="btn btn-primary btn-sm">Salvar</button>
+                </form>
                 <form method="post" action="/admin/channel-items/delete" onsubmit="return confirm('Excluir item {{it.id}}?');">
                   <input type="hidden" name="id" value="{{it.id}}">
                   <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
