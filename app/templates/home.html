@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
@@ -294,11 +294,51 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
       <section class="nex-admin" id="dashboard">
         <h2>Painel Operacional</h2>
         <div class="ops-grid" id="configuracoes">
+          <details class="ops-card" open id="category-manager">
+            <summary>Categorias</summary>
+            <form class="ops-form-grid" method="post" action="/admin/channel-categories/create">
+              <label>Nome<input name="name" placeholder="FILMES" required></label>
+              <label>Ordem<input name="sort_order" type="number" value="100"></label>
+              <button class="nex-btn nex-btn-indigo" type="submit">Cadastrar Categoria</button>
+            </form>
+            <table class="nex-table compact-table">
+              <thead><tr><th>Categoria</th><th>Ordem</th><th>Canais</th><th></th></tr></thead>
+              <tbody>
+              {% for cat in managed_channel_categories %}
+                <tr>
+                  <td><span class="pill">{{ cat.name }}</span></td>
+                  <td class="mono">{{ cat.sort_order }}</td>
+                  <td class="mono">{{ cat.channels_count }}</td>
+                  <td>
+                    {% if cat.channels_count == 0 %}
+                      <form method="post" action="/admin/channel-categories/delete" onsubmit="return confirm('Excluir categoria {{cat.name}}?');">
+                        <input type="hidden" name="category_id" value="{{cat.id}}">
+                        <button class="nex-btn nex-btn-inline is-danger" type="submit">Excluir</button>
+                      </form>
+                    {% else %}
+                      <span class="nex-empty">Em uso</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td colspan="4" class="nex-empty">Nenhuma categoria cadastrada.</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </details>
+
           <details class="ops-card" open id="create-channel">
             <summary>Criar Canal</summary>
             <form class="ops-form-grid" method="post" action="/admin/channels/create" enctype="multipart/form-data">
               <label>Nome<input name="name" placeholder="ESPN" required></label>
-              <label>Categoria<input name="category" placeholder="Esporte" required></label>
+              <label>Categoria
+                <select name="category" required>
+                  <option value="">Selecione</option>
+                  {% for cat in managed_channel_categories %}
+                    <option value="{{cat.name}}">{{cat.name}}</option>
+                  {% endfor %}
+                </select>
+              </label>
               <label>Numero<input name="channel_number" placeholder="004" required></label>
               <label>Provider
                 <select name="provider_id" required>
@@ -779,3 +819,4 @@ curl "http://CENTRAL_IP:9000/iptv/edge.m3u?api_key=edge_xxx"</code></pre>
 </script>
 </body>
 </html>
+

@@ -26,6 +26,28 @@
   </div>
 
   <div class="card mb-4">
+    <div class="card-header"><b>Categoria do Canal</b></div>
+    <div class="card-body">
+      <form class="row g-2" method="post" action="/admin/channels/category/update">
+        <input type="hidden" name="channel_id" value="{{ channel.id }}">
+        <input type="hidden" name="return_channel_id" value="{{ channel.id }}">
+        <div class="col-md-9">
+          <label class="form-label mb-1">Categoria padronizada</label>
+          <select class="form-select" name="category" required>
+            {% for cat in managed_channel_categories %}
+              <option value="{{ cat.name }}" {% if channel.category == cat.name %}selected{% endif %}>{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+          <div class="small-muted mt-2">Use apenas categorias cadastradas na central para manter a playlist padronizada.</div>
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button class="btn btn-primary btn-sm w-100">Atualizar categoria</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-4">
     <div class="card-header"><b>Icone do Canal (300x300)</b></div>
     <div class="card-body">
       <div class="d-flex align-items-center gap-3 mb-3">
@@ -238,3 +260,4 @@
 </div>
 </body>
 </html>
+

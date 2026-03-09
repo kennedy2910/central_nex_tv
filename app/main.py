@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 
 import os
 import re
@@ -26,6 +26,17 @@ try:
     from PIL import Image  # type: ignore
 except Exception:  # pragma: no cover
     Image = None
+
+
+DEFAULT_MANAGED_CHANNEL_CATEGORIES = [
+    "FILMES",
+    "DOCUMENTARIOS",
+    "KIDS",
+    "NOTICIAS",
+    "ESPORTES",
+    "MUSICAS",
+    "LIVES",
+]
 
 
 def fetch_html(url: str) -> str:
@@ -1095,6 +1106,23 @@ def init_db() -> None:
     """)
 
     # -------------------------
+    # Managed Channel Categories
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS channel_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_channel_categories_sort
+    ON channel_categories(is_active, sort_order, name)
+    """)
+
+    # -------------------------
     # Distribution Grades (lista de canais)
     # -------------------------
     cur.execute("""
@@ -1253,6 +1281,20 @@ def init_db() -> None:
         cur.execute("ALTER TABLE channels ADD COLUMN live_watch_last_seen_at TEXT")
     if "live_watch_last_url" not in cols:
         cur.execute("ALTER TABLE channels ADD COLUMN live_watch_last_url TEXT DEFAULT ''")
+
+    for idx, category_name in enumerate(DEFAULT_MANAGED_CHANNEL_CATEGORIES, start=1):
+        cur.execute(
+            "INSERT OR IGNORE INTO channel_categories(name, sort_order, is_active) VALUES (?,?,1)",
+            (category_name, idx * 10),
+        )
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO channel_categories(name, sort_order, is_active)
+        SELECT DISTINCT TRIM(category), 100, 1
+        FROM channels
+        WHERE TRIM(COALESCE(category, '')) <> ''
+        """
+    )
 
     # -------------------------
     # Legacy Channel Items (backward compatibility)
@@ -1494,6 +1536,42 @@ def execute(sql: str, args=()) -> None:
         raise HTTPException(status_code=500, detail=f"db operational error: {msg}")
     finally:
         conn.close()
+
+
+def fetch_channel_categories(include_inactive: bool = False) -> List[sqlite3.Row]:
+    sql = """
+        SELECT
+            cc.id,
+            cc.name,
+            cc.sort_order,
+            cc.is_active,
+            COUNT(c.id) AS channels_count
+        FROM channel_categories cc
+        LEFT JOIN channels c
+          ON LOWER(TRIM(c.category)) = LOWER(TRIM(cc.name))
+    """
+    args: List[Any] = []
+    if not include_inactive:
+        sql += " WHERE cc.is_active = 1"
+    sql += " GROUP BY cc.id, cc.name, cc.sort_order, cc.is_active ORDER BY cc.sort_order, cc.name"
+    return fetch_all(sql, tuple(args))
+
+
+def resolve_managed_channel_category(category_value: str) -> Optional[str]:
+    candidate = (category_value or "").strip()
+    if not candidate:
+        return None
+    row = fetch_one(
+        """
+        SELECT name
+        FROM channel_categories
+        WHERE is_active = 1 AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+        ORDER BY sort_order, name
+        LIMIT 1
+        """,
+        (candidate,),
+    )
+    return row["name"] if row else None
 
 
 def redirect_home_or_channel(channel_id: Optional[int]) -> RedirectResponse:
@@ -1883,13 +1961,8 @@ def home(request: Request):
 
     providers = fetch_all("SELECT * FROM providers ORDER BY provider_id")
     channel_grades = fetch_all("SELECT * FROM channel_grades ORDER BY name")
-    category_rows = fetch_all(
-        """SELECT DISTINCT category
-           FROM channels
-           WHERE TRIM(COALESCE(category, '')) <> ''
-           ORDER BY category"""
-    )
-    channel_categories = [r["category"] for r in category_rows]
+    managed_channel_categories = [dict(row) for row in fetch_channel_categories()]
+    channel_categories = [r["name"] for r in managed_channel_categories]
 
     channel_sql = """
         SELECT c.id, c.channel_number, c.name, c.category, c.provider_id, c.source_url, c.icon_url, c.kind, c.schedule_start,
@@ -2022,6 +2095,7 @@ def home(request: Request):
         "channels": channels,
         "channels_all": channels_all,
         "channel_categories": channel_categories,
+        "managed_channel_categories": managed_channel_categories,
         "channel_grades": channel_grades,
         "grade_channels": grade_channels,
         "banner_ads": banner_ads,
@@ -2035,6 +2109,37 @@ def home(request: Request):
         "selected_edge_state": edge_state,
         "selected_edge_city": edge_city,
     })
+
+
+@app.post("/admin/channel-categories/create")
+def create_channel_category(name: str = Form(...), sort_order: int = Form(100)):
+    name_clean = (name or "").strip()
+    if not name_clean:
+        raise HTTPException(status_code=400, detail="category name is required")
+    try:
+        sort_order_i = int(sort_order)
+    except Exception:
+        raise HTTPException(status_code=400, detail="sort_order must be numeric")
+    execute(
+        "INSERT OR IGNORE INTO channel_categories(name, sort_order, is_active) VALUES (?,?,1)",
+        (name_clean, sort_order_i),
+    )
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/admin/channel-categories/delete")
+def delete_channel_category(category_id: int = Form(...)):
+    row = fetch_one("SELECT id, name FROM channel_categories WHERE id=?", (category_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="category not found")
+    usage = fetch_one(
+        "SELECT COUNT(*) AS total FROM channels WHERE LOWER(TRIM(category)) = LOWER(TRIM(?))",
+        (row["name"],),
+    )
+    if usage and int(usage["total"] or 0) > 0:
+        raise HTTPException(status_code=409, detail="category is still in use by channels")
+    execute("DELETE FROM channel_categories WHERE id=?", (category_id,))
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/admin/providers/create")
@@ -2193,6 +2298,9 @@ def create_channel(
         except Exception:
             raise HTTPException(status_code=400, detail="live_watch_interval_seconds must be numeric")
         live_watch_interval_i = max(15, live_watch_interval_i)
+        category_clean = resolve_managed_channel_category(category)
+        if not category_clean:
+            raise HTTPException(status_code=400, detail="select a valid registered category")
         if icon_file and (icon_file.filename or "").strip():
             saved_icon_url = save_channel_icon_upload(icon_file)
         conn.execute(
@@ -2204,7 +2312,7 @@ def create_channel(
             (
                 channel_number.strip(),
                 name.strip(),
-                category.strip(),
+                category_clean,
                 provider_id,
                 source_url.strip(),
                 saved_icon_url,
@@ -2304,6 +2412,22 @@ def clear_channel_icon(
     return redirect_home_or_channel(return_channel_id or channel_id)
 
 
+@app.post("/admin/channels/category/update")
+def update_channel_category(
+    channel_id: int = Form(...),
+    category: str = Form(...),
+    return_channel_id: Optional[int] = Form(None),
+):
+    channel = fetch_one("SELECT id FROM channels WHERE id=?", (channel_id,))
+    if not channel:
+        raise HTTPException(status_code=404, detail="channel not found")
+    category_clean = resolve_managed_channel_category(category)
+    if not category_clean:
+        raise HTTPException(status_code=400, detail="select a valid registered category")
+    execute("UPDATE channels SET category=? WHERE id=?", (category_clean, channel_id))
+    return redirect_home_or_channel(return_channel_id or channel_id)
+
+
 @app.get("/admin/channels/{channel_id}", response_class=HTMLResponse)
 def channel_detail(channel_id: int, request: Request):
     channel = fetch_one(
@@ -2334,6 +2458,7 @@ def channel_detail(channel_id: int, request: Request):
            ORDER BY p.id, pi.position""",
         (channel_id,),
     )
+    managed_channel_categories = [dict(row) for row in fetch_channel_categories()]
     return templates.TemplateResponse(
         "channel_detail.html",
         {
@@ -2341,6 +2466,7 @@ def channel_detail(channel_id: int, request: Request):
             "channel": channel,
             "playlists": playlists,
             "playlist_items": playlist_items,
+            "managed_channel_categories": managed_channel_categories,
         },
     )
 
@@ -2949,3 +3075,5 @@ def playlist_for_edge(request: Request):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
